@@ -1,7 +1,13 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ru_passport/application/passport_plaintext_factory.dart';
 import 'package:ru_passport/application/recognition_controller.dart';
 import 'package:ru_passport/core/constants.dart';
+import 'package:ru_passport/crypto/encrypted_passport_payload.dart';
+import 'package:ru_passport/crypto/passport_encryption_service.dart';
+import 'package:ru_passport/crypto/passport_plaintext.dart';
 import 'package:ru_passport/domain/ocr_result.dart';
 import 'package:ru_passport/domain/parsed_field.dart';
 import 'package:ru_passport/domain/passport_number.dart';
@@ -32,10 +38,26 @@ void main() {
       documentConfidence: 0.9,
       view: 'first_spread',
       fields: {
-        'lastName': ParsedField(value: 'ИВАНОВ', confidence: 0.9, sourceRegion: null),
-        'firstName': ParsedField(value: 'ИВАН', confidence: 0.9, sourceRegion: null),
-        'series': ParsedField(value: '1234', confidence: 0.9, sourceRegion: null),
-        'number': ParsedField(value: '567890', confidence: 0.9, sourceRegion: null),
+        'lastName': ParsedField(
+          value: 'ИВАНОВ',
+          confidence: 0.9,
+          sourceRegion: null,
+        ),
+        'firstName': ParsedField(
+          value: 'ИВАН',
+          confidence: 0.9,
+          sourceRegion: null,
+        ),
+        'series': ParsedField(
+          value: '1234',
+          confidence: 0.9,
+          sourceRegion: null,
+        ),
+        'number': ParsedField(
+          value: '567890',
+          confidence: 0.9,
+          sourceRegion: null,
+        ),
       },
     );
   }
@@ -55,13 +77,24 @@ void main() {
       view: 'registration',
       warnings: address == null || address.isEmpty
           ? const [
-              {'code': 'ADDRESS_NOT_RECOGNIZED', 'field': 'registrationAddress'},
+              {
+                'code': 'ADDRESS_NOT_RECOGNIZED',
+                'field': 'registrationAddress',
+              },
             ]
           : const [],
       fields: {
-        'number': const ParsedField(value: '567890', confidence: 0.8, sourceRegion: null),
+        'number': const ParsedField(
+          value: '567890',
+          confidence: 0.8,
+          sourceRegion: null,
+        ),
         if (address != null && address.isNotEmpty)
-          'registrationAddress': ParsedField(value: address, confidence: 0.8, sourceRegion: null),
+          'registrationAddress': ParsedField(
+            value: address,
+            confidence: 0.8,
+            sourceRegion: null,
+          ),
       },
     );
   }
@@ -87,12 +120,17 @@ void main() {
     expect(find.text('Выбрать файл'), findsWidgets);
     expect(find.byKey(const Key('snapshot-firstSpread')), findsOneWidget);
     expect(find.byKey(const Key('snapshot-registration')), findsOneWidget);
-    expect(find.image(const AssetImage(AppConstants.appIconAsset)), findsOneWidget);
+    expect(
+      find.image(const AssetImage(AppConstants.appIconAsset)),
+      findsOneWidget,
+    );
     expect(find.text('изменено'), findsNothing);
     expect(find.text('отредактировано'), findsNothing);
   });
 
-  testWidgets('locked steps and review stay closed until registration', (tester) async {
+  testWidgets('locked steps and review stay closed until registration', (
+    tester,
+  ) async {
     setDesktopView(tester);
     final controller = RecognitionController();
     controller.phase = RecognitionPhase.ready;
@@ -163,12 +201,18 @@ void main() {
     controller.fieldEdits['lastName'] = 'ИВАНОВ';
     controller.fieldEdits['series'] = '1234';
     controller.fieldEdits['number'] = '567890';
-    controller.fieldEdits['registrationAddress'] = 'Г. МОСКВА, УЛ. ТВЕРСКАЯ Д. 1';
+    controller.fieldEdits['registrationAddress'] =
+        'Г. МОСКВА, УЛ. ТВЕРСКАЯ Д. 1';
     controller.numberMatch = PassportNumberMatch.mismatch;
-    controller.registrationResult = registration(address: 'Г. МОСКВА, УЛ. ТВЕРСКАЯ Д. 1');
+    controller.registrationResult = registration(
+      address: 'Г. МОСКВА, УЛ. ТВЕРСКАЯ Д. 1',
+    );
 
     await tester.pumpWidget(PassportApp(controller: controller));
-    expect(find.text('Номер на странице регистрации не совпадает'), findsOneWidget);
+    expect(
+      find.text('Номер на странице регистрации не совпадает'),
+      findsOneWidget,
+    );
     expect(find.text('Г. МОСКВА, УЛ. ТВЕРСКАЯ Д. 1'), findsOneWidget);
   });
 
@@ -219,7 +263,10 @@ void main() {
     controller.fieldEdits['registrationAddress'] = '';
 
     await tester.pumpWidget(PassportApp(controller: controller));
-    expect(find.text('Не удалось сверить номер паспорта на странице регистрации'), findsNothing);
+    expect(
+      find.text('Не удалось сверить номер паспорта на странице регистрации'),
+      findsNothing,
+    );
     expect(find.text('Адрес прописки не распознан.'), findsOneWidget);
   });
 
@@ -246,4 +293,57 @@ void main() {
     expect(editable.widget.controller.value.text, 'ПЕТРОВ');
     expect(editable.widget.focusNode.hasFocus, isTrue);
   });
+
+  testWidgets('review next encrypts and shows ready to send', (tester) async {
+    setDesktopView(tester);
+    final controller = RecognitionController(
+      encryptionService: _StubEncryptionService(),
+      plaintextFactory: PassportPlaintextFactory(
+        readPathBytes: (_) async => Uint8List(0),
+      ),
+    );
+    controller.phase = RecognitionPhase.ready;
+    controller.result = firstSpread();
+    controller.firstSpreadPath = '/tmp/first.png';
+    controller.registrationPath = '/tmp/reg.png';
+    controller.registrationResult = registration(address: 'Г. МОСКВА');
+    controller.currentStep = PipelineStep.review;
+    controller.fieldEdits['lastName'] = 'ИВАНОВ';
+    controller.fieldEdits['registrationAddress'] = 'Г. МОСКВА';
+
+    await tester.pumpWidget(PassportApp(controller: controller));
+    await tester.tap(find.text('Далее'));
+    await tester.pump();
+    await tester.pump();
+    expect(controller.currentStep, PipelineStep.encryption);
+    expect(find.text('Данные зашифрованы'), findsOneWidget);
+    expect(
+      find.text('Всё готово к передаче данных на сервер.'),
+      findsOneWidget,
+    );
+    expect(
+      find.text(
+        'Этот шаг появится позже. Данные пока остаются только на этом компьютере.',
+      ),
+      findsNothing,
+    );
+    expect(find.text('Zg=='), findsNothing);
+    await tester.tap(find.byKey(const Key('pipeline-step-send')));
+    await tester.pump();
+    expect(controller.currentStep, PipelineStep.encryption);
+  });
+}
+
+class _StubEncryptionService extends PassportEncryptionService {
+  @override
+  Future<EncryptedPassportPayload> encrypt(PassportPlaintext plaintext) async {
+    return const EncryptedPassportPayload(
+      version: 1,
+      keyAlgorithm: 'RSA-OAEP-SHA256',
+      dataAlgorithm: 'AES-256-GCM',
+      encryptedKey: 'Zg==',
+      passport: EncryptedBlob(ciphertext: 'YQ==', nonce: 'Yg==', tag: 'Yw=='),
+      photos: [],
+    );
+  }
 }

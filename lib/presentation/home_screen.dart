@@ -71,7 +71,15 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<String?> _pickImagePath() async {
     final picked = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: const ['jpg', 'jpeg', 'png', 'webp', 'bmp', 'tif', 'tiff'],
+      allowedExtensions: const [
+        'jpg',
+        'jpeg',
+        'png',
+        'webp',
+        'bmp',
+        'tif',
+        'tiff',
+      ],
     );
     return picked?.files.single.path;
   }
@@ -129,10 +137,15 @@ class _HomeScreenState extends State<HomeScreen> {
                     current: _controller.currentStep,
                     canSelect: _controller.canSelectStep,
                     isComplete: (step) => switch (step) {
-                      PipelineStep.firstSpread => _controller.hasSuccessfulFirstSpread,
-                      PipelineStep.registration => _controller.hasSuccessfulRegistration,
-                      PipelineStep.review ||
-                      PipelineStep.encryption ||
+                      PipelineStep.firstSpread =>
+                        _controller.hasSuccessfulFirstSpread,
+                      PipelineStep.registration =>
+                        _controller.hasSuccessfulRegistration,
+                      PipelineStep.review =>
+                        _controller.hasEncryptedDocument ||
+                            _controller.currentStep == PipelineStep.encryption,
+                      PipelineStep.encryption =>
+                        _controller.hasEncryptedDocument,
                       PipelineStep.send => false,
                     },
                     onSelect: _controller.selectStep,
@@ -174,13 +187,11 @@ class _HomeScreenState extends State<HomeScreen> {
         extra: _registrationNotices(),
       ),
       PipelineStep.review => _reviewStep(),
-      PipelineStep.encryption => const _PlaceholderStep(
-        title: 'Шифрование данных',
-        message: 'Этот шаг появится позже. Данные пока остаются только на этом компьютере.',
-      ),
+      PipelineStep.encryption => _encryptionStep(),
       PipelineStep.send => const _PlaceholderStep(
         title: 'Отправка пакета',
-        message: 'Отправка будет добавлена позже. Сейчас пакет никуда не уходит.',
+        message:
+            'Отправка будет добавлена позже. Сейчас пакет никуда не уходит.',
       ),
     };
   }
@@ -203,7 +214,9 @@ class _HomeScreenState extends State<HomeScreen> {
       hasFile: true,
       onDrop: _controller.recognize,
       onPick: _pickFirstSpread,
-      errorText: _controller.phase == RecognitionPhase.error ? _controller.errorMessage : null,
+      errorText: _controller.phase == RecognitionPhase.error
+          ? _controller.errorMessage
+          : null,
     );
   }
 
@@ -271,30 +284,39 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-          Text(_controller.statusLabel, style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: AppSpacing.md),
-          if (_controller.isBusy) const LinearProgressIndicator(),
-          if (errorText != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: AppSpacing.md),
-              child: Text(errorText, style: const TextStyle(color: AppColors.danger)),
+            Text(
+              _controller.statusLabel,
+              style: Theme.of(context).textTheme.titleMedium,
             ),
-          if (successText != null && !_controller.isBusy)
-            Padding(
-              padding: const EdgeInsets.only(bottom: AppSpacing.md),
-              child: Text(successText, style: const TextStyle(color: AppColors.success)),
+            const SizedBox(height: AppSpacing.md),
+            if (_controller.isBusy) const LinearProgressIndicator(),
+            if (errorText != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: AppSpacing.md),
+                child: Text(
+                  errorText,
+                  style: const TextStyle(color: AppColors.danger),
+                ),
+              ),
+            if (successText != null && !_controller.isBusy)
+              Padding(
+                padding: const EdgeInsets.only(bottom: AppSpacing.md),
+                child: Text(
+                  successText,
+                  style: const TextStyle(color: AppColors.success),
+                ),
+              ),
+            ?extra,
+            const Spacer(),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: _controller.isBusy ? null : onPick,
+                icon: const Icon(Icons.swap_horiz),
+                label: const Text('Заменить снимок'),
+              ),
             ),
-          ?extra,
-          const Spacer(),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              onPressed: _controller.isBusy ? null : onPick,
-              icon: const Icon(Icons.swap_horiz),
-              label: const Text('Заменить снимок'),
-            ),
-          ),
-        ],
+          ],
         ),
       ),
     );
@@ -324,7 +346,8 @@ class _HomeScreenState extends State<HomeScreen> {
     if (result == null) {
       return const _PlaceholderStep(
         title: 'Редактирование и проверка',
-        message: 'Сначала распознайте основной разворот и страницу регистрации.',
+        message:
+            'Сначала распознайте основной разворот и страницу регистрации.',
       );
     }
     return SizedBox.expand(
@@ -339,26 +362,95 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-            const Text('Данные паспорта', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
-            const SizedBox(height: AppSpacing.sm),
-            Text(
-              _resultSummary(result),
-              style: const TextStyle(color: AppColors.muted),
+              const Text(
+                'Данные паспорта',
+                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                _resultSummary(result),
+                style: const TextStyle(color: AppColors.muted),
+              ),
+              const SizedBox(height: AppSpacing.md),
+              if (result.view == 'first_spread' && result.errorCode == null)
+                _identityImages(result),
+              if (_controller.numberMatch != PassportNumberMatch.none)
+                _numberMatchBanner(),
+              if (_isRegistrationAddressMissing)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: AppSpacing.md),
+                  child: Text(
+                    'Адрес прописки не распознан.',
+                    style: TextStyle(color: AppColors.danger),
+                  ),
+                ),
+              for (final spec in kPassportFormFields)
+                _fieldEditor(spec, result),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _encryptionStep() {
+    final ready = _controller.hasEncryptedDocument;
+    final failed = _controller.encryptionPhase == EncryptionPhase.error;
+    final encrypting = !ready && !failed;
+    return SizedBox.expand(
+      child: GlassPanel(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              ready
+                  ? Icons.check_circle_outline
+                  : failed
+                  ? Icons.error_outline
+                  : Icons.lock_outline,
+              size: 36,
+              color: ready
+                  ? AppColors.success
+                  : failed
+                  ? AppColors.danger
+                  : AppColors.muted,
             ),
             const SizedBox(height: AppSpacing.md),
-            if (result.view == 'first_spread' && result.errorCode == null) _identityImages(result),
-            if (_controller.numberMatch != PassportNumberMatch.none) _numberMatchBanner(),
-            if (_isRegistrationAddressMissing)
-              const Padding(
-                padding: EdgeInsets.only(bottom: AppSpacing.md),
-                child: Text(
-                  'Адрес прописки не распознан.',
-                  style: TextStyle(color: AppColors.danger),
-                ),
+            Text(
+              ready
+                  ? 'Данные зашифрованы'
+                  : failed
+                  ? 'Не удалось зашифровать'
+                  : 'Шифрование данных',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              ready
+                  ? 'Всё готово к передаче данных на сервер.'
+                  : failed
+                  ? (_controller.encryptionError ??
+                        'Не удалось зашифровать документ.')
+                  : 'Документ шифруется на этом компьютере.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: failed ? AppColors.danger : AppColors.muted,
               ),
-            for (final spec in kPassportFormFields) _fieldEditor(spec, result),
+            ),
+            if (encrypting) ...[
+              const SizedBox(height: AppSpacing.lg),
+              const SizedBox(width: 240, child: LinearProgressIndicator()),
+            ],
+            if (failed) ...[
+              const SizedBox(height: AppSpacing.lg),
+              OutlinedButton(
+                onPressed: _controller.isBusy
+                    ? null
+                    : () => _controller.encryptDocument(force: true),
+                child: const Text('Повторить'),
+              ),
+            ],
           ],
-          ),
         ),
       ),
     );
@@ -380,10 +472,18 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _fieldEditor(PassportFormSpec spec, OcrResult result, {bool readOnly = false}) {
+  Widget _fieldEditor(
+    PassportFormSpec spec,
+    OcrResult result, {
+    bool readOnly = false,
+  }) {
     final field = result.fields[spec.id];
-    final lowConfidence = (field?.confidence ?? 0) > 0 && (field?.confidence ?? 0) < kLowFieldConfidence;
-    final text = _controller.fieldEdits[spec.id] ?? displayFieldValue(spec.id, field?.value);
+    final lowConfidence =
+        (field?.confidence ?? 0) > 0 &&
+        (field?.confidence ?? 0) < kLowFieldConfidence;
+    final text =
+        _controller.fieldEdits[spec.id] ??
+        displayFieldValue(spec.id, field?.value);
     final multiline = spec.id == 'registrationAddress';
     final missing = _isUnrecognized(spec, text);
     return Padding(
@@ -399,16 +499,25 @@ class _HomeScreenState extends State<HomeScreen> {
           filled: true,
           fillColor: missing ? AppColors.missingFill : AppColors.glassStrong,
           enabledBorder: missing
-              ? const OutlineInputBorder(borderSide: BorderSide(color: AppColors.danger))
+              ? const OutlineInputBorder(
+                  borderSide: BorderSide(color: AppColors.danger),
+                )
               : null,
           focusedBorder: missing
-              ? const OutlineInputBorder(borderSide: BorderSide(color: AppColors.danger, width: 2))
+              ? const OutlineInputBorder(
+                  borderSide: BorderSide(color: AppColors.danger, width: 2),
+                )
               : null,
           suffixIcon: lowConfidence
-              ? const Icon(Icons.warning_amber_rounded, color: AppColors.warning)
+              ? const Icon(
+                  Icons.warning_amber_rounded,
+                  color: AppColors.warning,
+                )
               : null,
         ),
-        onChanged: readOnly ? null : (value) => _controller.updateField(spec.id, value),
+        onChanged: readOnly
+            ? null
+            : (value) => _controller.updateField(spec.id, value),
       ),
     );
   }
@@ -424,7 +533,8 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_controller.result?.errorCode != null) {
       return false;
     }
-    if (spec.id == 'registrationAddress' && _controller.registrationResult == null) {
+    if (spec.id == 'registrationAddress' &&
+        _controller.registrationResult == null) {
       return false;
     }
     return text.trim().isEmpty;
@@ -439,10 +549,7 @@ class _HomeScreenState extends State<HomeScreen> {
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              _imageFrame(
-                bytes: result.photoBytes,
-                icon: Icons.person_outline,
-              ),
+              _imageFrame(bytes: result.photoBytes, icon: Icons.person_outline),
               const SizedBox(width: AppSpacing.lg),
               _imageFrame(
                 bytes: result.signatureBytes,
@@ -457,12 +564,18 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               SizedBox(
                 width: 72,
-                child: Text(result.photoBytes == null ? 'Фото не найдено' : 'Фотография'),
+                child: Text(
+                  result.photoBytes == null ? 'Фото не найдено' : 'Фотография',
+                ),
               ),
               const SizedBox(width: AppSpacing.lg),
               SizedBox(
                 width: 120,
-                child: Text(result.signatureBytes == null ? 'Подпись не найдена' : 'Подпись'),
+                child: Text(
+                  result.signatureBytes == null
+                      ? 'Подпись не найдена'
+                      : 'Подпись',
+                ),
               ),
             ],
           ),
@@ -492,7 +605,12 @@ class _HomeScreenState extends State<HomeScreen> {
                 color: AppColors.missingFill,
                 child: Icon(icon, color: AppColors.danger),
               )
-            : Image.memory(bytes, width: width, height: height, fit: BoxFit.contain),
+            : Image.memory(
+                bytes,
+                width: width,
+                height: height,
+                fit: BoxFit.contain,
+              ),
       ),
     );
   }

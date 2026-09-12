@@ -21,8 +21,7 @@ enum PipelineStep {
     PipelineStep.send => 'Отправка пакета',
   };
 
-  bool get isPlaceholder =>
-      this == PipelineStep.encryption || this == PipelineStep.send;
+  bool get isPlaceholder => this == PipelineStep.send;
 
   PipelineStep? get previous {
     if (index == 0) {

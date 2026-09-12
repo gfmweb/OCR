@@ -1,5 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
+import 'package:ru_passport/application/passport_plaintext_factory.dart';
 import 'package:ru_passport/core/errors.dart';
+import 'package:ru_passport/crypto/crypto_exception.dart';
+import 'package:ru_passport/crypto/encrypted_passport_payload.dart';
+import 'package:ru_passport/crypto/passport_encryption_service.dart';
 import 'package:ru_passport/domain/ocr_result.dart';
 import 'package:ru_passport/domain/parsed_field.dart';
 import 'package:ru_passport/domain/passport_number.dart';
@@ -15,12 +21,23 @@ enum RecognitionPhase {
   error,
 }
 
+enum EncryptionPhase { idle, encrypting, ready, error }
+
 class RecognitionController extends ChangeNotifier {
-  RecognitionController({LocalOcrClient? client}) : _client = client ?? LocalOcrClient();
+  RecognitionController({
+    LocalOcrClient? client,
+    PassportEncryptionService? encryptionService,
+    PassportPlaintextFactory? plaintextFactory,
+  }) : _client = client ?? LocalOcrClient(),
+       _encryptionService = encryptionService ?? PassportEncryptionService(),
+       _plaintextFactory = plaintextFactory ?? const PassportPlaintextFactory();
 
   final LocalOcrClient _client;
+  final PassportEncryptionService _encryptionService;
+  final PassportPlaintextFactory _plaintextFactory;
 
   RecognitionPhase phase = RecognitionPhase.idle;
+  EncryptionPhase encryptionPhase = EncryptionPhase.idle;
   PipelineStep currentStep = PipelineStep.firstSpread;
   String? firstSpreadPath;
   String? registrationPath;
@@ -28,25 +45,36 @@ class RecognitionController extends ChangeNotifier {
   OcrResult? registrationResult;
   String? errorMessage;
   String? registrationError;
+  String? encryptionError;
+  EncryptedPassportPayload? encryptedPayload;
+  Future<void>? _inFlightEncryption;
   PassportNumberMatch numberMatch = PassportNumberMatch.none;
   final Map<String, String> fieldEdits = {};
   final Map<String, String> fieldOriginals = {};
 
   String? get imagePath => firstSpreadPath;
 
+  bool get hasEncryptedDocument =>
+      encryptionPhase == EncryptionPhase.ready && encryptedPayload != null;
+
   bool get isBusy =>
       phase == RecognitionPhase.startingService ||
       phase == RecognitionPhase.preparingImage ||
-      phase == RecognitionPhase.ocr;
+      phase == RecognitionPhase.ocr ||
+      encryptionPhase == EncryptionPhase.encrypting;
 
   bool get hasSuccessfulFirstSpread {
     final current = result;
-    return current != null && current.view == 'first_spread' && current.errorCode == null;
+    return current != null &&
+        current.view == 'first_spread' &&
+        current.errorCode == null;
   }
 
   bool get hasSuccessfulRegistration {
     final current = registrationResult;
-    return current != null && current.view == 'registration' && current.errorCode == null;
+    return current != null &&
+        current.view == 'registration' &&
+        current.errorCode == null;
   }
 
   bool get canAddRegistration =>
@@ -61,7 +89,8 @@ class RecognitionController extends ChangeNotifier {
     return switch (currentStep) {
       PipelineStep.firstSpread => hasSuccessfulFirstSpread,
       PipelineStep.registration => hasSuccessfulRegistration,
-      PipelineStep.review || PipelineStep.encryption || PipelineStep.send => false,
+      PipelineStep.review => hasSuccessfulRegistration,
+      PipelineStep.encryption || PipelineStep.send => false,
     };
   }
 
@@ -92,8 +121,9 @@ class RecognitionController extends ChangeNotifier {
     return switch (step) {
       PipelineStep.firstSpread => true,
       PipelineStep.registration => hasSuccessfulFirstSpread,
-      PipelineStep.review => hasSuccessfulRegistration,
-      PipelineStep.encryption || PipelineStep.send => false,
+      PipelineStep.review ||
+      PipelineStep.encryption => hasSuccessfulRegistration,
+      PipelineStep.send => false,
     };
   }
 
@@ -103,6 +133,9 @@ class RecognitionController extends ChangeNotifier {
     }
     currentStep = step;
     notifyListeners();
+    if (step == PipelineStep.encryption) {
+      unawaited(encryptDocument());
+    }
   }
 
   void goBack() {
@@ -131,6 +164,7 @@ class RecognitionController extends ChangeNotifier {
     numberMatch = PassportNumberMatch.none;
     fieldEdits.clear();
     fieldOriginals.clear();
+    _clearEncryption();
     currentStep = PipelineStep.firstSpread;
     _setPhase(RecognitionPhase.startingService);
     try {
@@ -141,7 +175,9 @@ class RecognitionController extends ChangeNotifier {
       result = next;
       _snapshotAllFields(next);
       if (next.errorCode != null) {
-        errorMessage = next.errorCode == 'NOT_FIRST_SPREAD' || next.errorCode == 'NOT_RUSSIAN_PASSPORT'
+        errorMessage =
+            next.errorCode == 'NOT_FIRST_SPREAD' ||
+                next.errorCode == 'NOT_RUSSIAN_PASSPORT'
             ? 'Это не первый разворот внутреннего паспорта РФ.'
             : 'Не удалось собрать цифровую копию.';
         _setPhase(RecognitionPhase.error);
@@ -163,6 +199,7 @@ class RecognitionController extends ChangeNotifier {
     }
     registrationPath = path;
     registrationError = null;
+    _clearEncryption();
     currentStep = PipelineStep.registration;
     _setPhase(RecognitionPhase.ocr);
     try {
@@ -201,7 +238,62 @@ class RecognitionController extends ChangeNotifier {
 
   void updateField(String id, String value) {
     fieldEdits[id] = value;
+    _clearEncryption();
     notifyListeners();
+  }
+
+  Future<void> encryptDocument({bool force = false}) {
+    if (!force && hasEncryptedDocument) {
+      return Future.value();
+    }
+    final inFlight = _inFlightEncryption;
+    if (inFlight != null) {
+      return inFlight;
+    }
+    if (!hasSuccessfulRegistration) {
+      return Future.value();
+    }
+    final future = _encryptNow();
+    _inFlightEncryption = future;
+    return future.whenComplete(() {
+      if (identical(_inFlightEncryption, future)) {
+        _inFlightEncryption = null;
+      }
+    });
+  }
+
+  Future<void> _encryptNow() async {
+    encryptionPhase = EncryptionPhase.encrypting;
+    encryptionError = null;
+    encryptedPayload = null;
+    notifyListeners();
+    try {
+      final plaintext = await _plaintextFactory.fromSources(
+        originals: fieldOriginals,
+        edits: fieldEdits,
+        firstSpreadPath: firstSpreadPath,
+        registrationPath: registrationPath,
+        portraitBytes: result?.photoBytes,
+        signatureBytes: result?.signatureBytes,
+      );
+      encryptedPayload = await _encryptionService.encrypt(plaintext);
+      encryptionPhase = EncryptionPhase.ready;
+    } on CryptoException catch (error) {
+      encryptedPayload = null;
+      encryptionError = error.message;
+      encryptionPhase = EncryptionPhase.error;
+    } catch (_) {
+      encryptedPayload = null;
+      encryptionError = 'Не удалось зашифровать документ.';
+      encryptionPhase = EncryptionPhase.error;
+    }
+    notifyListeners();
+  }
+
+  void _clearEncryption() {
+    encryptedPayload = null;
+    encryptionError = null;
+    encryptionPhase = EncryptionPhase.idle;
   }
 
   void _snapshotAllFields(OcrResult next) {
@@ -224,11 +316,13 @@ class RecognitionController extends ChangeNotifier {
   }
 
   String _readyLabel(OcrResult current) {
-    if (current.errorCode == 'NOT_FIRST_SPREAD' || current.errorCode == 'NOT_RUSSIAN_PASSPORT') {
+    if (current.errorCode == 'NOT_FIRST_SPREAD' ||
+        current.errorCode == 'NOT_RUSSIAN_PASSPORT') {
       return 'Это не первый разворот паспорта';
     }
     final filled = kPassportFormFields.where((spec) {
-      return (fieldEdits[spec.id] ?? displayFieldValue(spec.id, current.fields[spec.id]?.value))
+      return (fieldEdits[spec.id] ??
+              displayFieldValue(spec.id, current.fields[spec.id]?.value))
           .trim()
           .isNotEmpty;
     }).length;

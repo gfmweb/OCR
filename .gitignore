@@ -25,6 +25,11 @@ evaluation/local/
 **/*passport*.png
 **/*паспорт*
 
+# RSA private keys (never commit production keys)
+*_private.pem
+!test/fixtures/crypto/test_private.pem
+!test/fixtures/crypto/test_wrong_private.pem
+
 # Miscellaneous
 *.class
 *.log
