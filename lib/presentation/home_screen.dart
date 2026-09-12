@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
@@ -8,8 +7,13 @@ import 'package:ru_passport/core/constants.dart';
 import 'package:ru_passport/domain/ocr_result.dart';
 import 'package:ru_passport/domain/parsed_field.dart';
 import 'package:ru_passport/domain/passport_number.dart';
+import 'package:ru_passport/domain/pipeline_step.dart';
+import 'package:ru_passport/presentation/theme/app_theme.dart';
+import 'package:ru_passport/presentation/theme/tokens.dart';
+import 'package:ru_passport/presentation/widgets/glass_panel.dart';
 import 'package:ru_passport/presentation/widgets/image_drop_zone.dart';
-import 'package:ru_passport/presentation/widgets/ocr_overlay.dart';
+import 'package:ru_passport/presentation/widgets/snapshot_strip.dart';
+import 'package:ru_passport/presentation/widgets/step_rail.dart';
 
 class PassportApp extends StatelessWidget {
   const PassportApp({super.key, this.controller});
@@ -21,13 +25,7 @@ class PassportApp extends StatelessWidget {
     return MaterialApp(
       title: AppConstants.appTitle,
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF1F4E79),
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
-      ),
+      theme: AppTheme.light(),
       home: HomeScreen(controller: controller),
     );
   }
@@ -78,7 +76,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return picked?.files.single.path;
   }
 
-  Future<void> _pickFile() async {
+  Future<void> _pickFirstSpread() async {
     final path = await _pickImagePath();
     if (path != null) {
       await _controller.recognize(path);
@@ -94,160 +92,323 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text(AppConstants.appTitle)),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
+    return DecoratedBox(
+      decoration: AppTheme.background,
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(AppSpacing.lg),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    Image.asset(
+                      AppConstants.appIconAsset,
+                      width: 32,
+                      height: 32,
+                      filterQuality: FilterQuality.high,
+                    ),
+                    const SizedBox(width: AppSpacing.sm),
+                    Text(
+                      AppConstants.appTitle,
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: AppSpacing.md),
+                GlassPanel(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppSpacing.md,
+                    AppSpacing.md,
+                    AppSpacing.md,
+                    AppSpacing.sm,
+                  ),
+                  child: StepRail(
+                    current: _controller.currentStep,
+                    canSelect: _controller.canSelectStep,
+                    isComplete: (step) => switch (step) {
+                      PipelineStep.firstSpread => _controller.hasSuccessfulFirstSpread,
+                      PipelineStep.registration => _controller.hasSuccessfulRegistration,
+                      PipelineStep.review ||
+                      PipelineStep.encryption ||
+                      PipelineStep.send => false,
+                    },
+                    onSelect: _controller.selectStep,
+                  ),
+                ),
+                const SizedBox(height: AppSpacing.md),
+                SnapshotStrip(
+                  firstSpreadPath: _controller.firstSpreadPath,
+                  registrationPath: _controller.registrationPath,
+                  currentStep: _controller.currentStep,
+                  canSelect: _controller.canSelectStep,
+                  onSelect: _controller.selectStep,
+                ),
+                const SizedBox(height: AppSpacing.md),
+                Expanded(child: _stepBody()),
+                const SizedBox(height: AppSpacing.md),
+                _navBar(),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _stepBody() {
+    return switch (_controller.currentStep) {
+      PipelineStep.firstSpread => _firstSpreadStep(),
+      PipelineStep.registration => _captureStep(
+        title: 'Перетащите страницу регистрации',
+        subtitle: 'Страница с адресом прописки',
+        hasFile: _controller.registrationPath != null,
+        onDrop: _controller.recognizeRegistration,
+        onPick: _pickRegistration,
+        errorText: _controller.registrationError,
+        successText: _controller.hasSuccessfulRegistration
+            ? 'Страница регистрации распознана. Проверьте данные на следующем шаге.'
+            : null,
+        extra: _registrationNotices(),
+      ),
+      PipelineStep.review => _reviewStep(),
+      PipelineStep.encryption => const _PlaceholderStep(
+        title: 'Шифрование данных',
+        message: 'Этот шаг появится позже. Данные пока остаются только на этом компьютере.',
+      ),
+      PipelineStep.send => const _PlaceholderStep(
+        title: 'Отправка пакета',
+        message: 'Отправка будет добавлена позже. Сейчас пакет никуда не уходит.',
+      ),
+    };
+  }
+
+  Widget _firstSpreadStep() {
+    if (_controller.firstSpreadPath == null && !_controller.isBusy) {
+      return ImageDropZone(
+        title: 'Перетащите основной разворот паспорта',
+        subtitle: 'Страницы 2–3 внутреннего паспорта РФ',
+        onPath: _controller.recognize,
+        onPickFile: _pickFirstSpread,
+      );
+    }
+    if (_controller.hasSuccessfulFirstSpread) {
+      return _firstSpreadPreview();
+    }
+    return _captureStep(
+      title: 'Перетащите основной разворот паспорта',
+      subtitle: 'Страницы 2–3 внутреннего паспорта РФ',
+      hasFile: true,
+      onDrop: _controller.recognize,
+      onPick: _pickFirstSpread,
+      errorText: _controller.phase == RecognitionPhase.error ? _controller.errorMessage : null,
+    );
+  }
+
+  Widget _firstSpreadPreview() {
+    final result = _controller.result!;
+    return SizedBox.expand(
+      child: GlassPanel(
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg,
+          AppSpacing.md,
+          AppSpacing.lg,
+          AppSpacing.lg,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(flex: 3, child: _preview()),
-            const SizedBox(width: 16),
-            Expanded(flex: 2, child: _sidePanel()),
+            Expanded(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _identityImages(result),
+                    for (final spec in kPassportFormFields)
+                      if (spec.id != 'registrationAddress')
+                        _fieldEditor(spec, result, readOnly: true),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: AppSpacing.md),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: _controller.isBusy ? null : _pickFirstSpread,
+                icon: const Icon(Icons.swap_horiz),
+                label: const Text('Заменить снимок'),
+              ),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Widget _preview() {
-    final path = _controller.imagePath;
-    final result = _controller.result;
-    if (path == null) {
-      return ImageDropZone(onPath: _controller.recognize, onPickFile: _pickFile);
+  Widget _captureStep({
+    required String title,
+    required String subtitle,
+    required bool hasFile,
+    required ValueChanged<String> onDrop,
+    required VoidCallback onPick,
+    String? errorText,
+    String? successText,
+    Widget? extra,
+  }) {
+    if (!hasFile && !_controller.isBusy) {
+      return ImageDropZone(
+        title: title,
+        subtitle: subtitle,
+        onPath: onDrop,
+        onPickFile: onPick,
+      );
     }
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFFF7F8FA),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFD0D7DE)),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(16),
-        child: result == null
-            ? Image.file(File(path), fit: BoxFit.contain)
-            : OcrOverlay(
-                imageFile: File(path),
-                imageSize: Size(
-                  result.imageWidth.toDouble(),
-                  result.imageHeight.toDouble(),
-                ),
-                lines: const [],
-                rotationDegrees: 0,
-              ),
+    return SizedBox.expand(
+      child: GlassPanel(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+          Text(_controller.statusLabel, style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: AppSpacing.md),
+          if (_controller.isBusy) const LinearProgressIndicator(),
+          if (errorText != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.md),
+              child: Text(errorText, style: const TextStyle(color: AppColors.danger)),
+            ),
+          if (successText != null && !_controller.isBusy)
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.md),
+              child: Text(successText, style: const TextStyle(color: AppColors.success)),
+            ),
+          ?extra,
+          const Spacer(),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              onPressed: _controller.isBusy ? null : onPick,
+              icon: const Icon(Icons.swap_horiz),
+              label: const Text('Заменить снимок'),
+            ),
+          ),
+        ],
+        ),
       ),
     );
   }
 
-  Widget _sidePanel() {
-    final result = _controller.result;
+  Widget _registrationNotices() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _progressCard(),
-        const SizedBox(height: 12),
-        if (_controller.phase == RecognitionPhase.error)
-          Card(
-            color: const Color(0xFFFFF1F0),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text(_controller.errorMessage ?? 'Ошибка'),
+        if (_controller.numberMatch == PassportNumberMatch.match ||
+            _controller.numberMatch == PassportNumberMatch.mismatch)
+          _numberMatchBanner(),
+        if (_isRegistrationAddressMissing)
+          const Padding(
+            padding: EdgeInsets.only(bottom: AppSpacing.md),
+            child: Text(
+              'Адрес прописки не распознан.',
+              style: TextStyle(color: AppColors.danger),
             ),
           ),
-        if (result != null) Expanded(child: _digitalCopy(result)),
-        if (result == null) const Spacer(),
-        if (_controller.result?.view == 'first_spread' && _controller.result?.errorCode == null)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: FilledButton(
-              onPressed: _controller.canAddRegistration ? _pickRegistration : null,
-              child: const Text('Добавить страницу регистрации'),
-            ),
-          ),
-        OutlinedButton(
-          onPressed: _pickFile,
-          child: const Text('Попробовать другое изображение'),
-        ),
-        const SizedBox(height: 8),
-        FilledButton.tonal(onPressed: _pickFile, child: const Text('Выбрать файл')),
       ],
     );
   }
 
-  Widget _digitalCopy(OcrResult result) {
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (result.errorCode == 'NOT_FIRST_SPREAD' ||
-                result.errorCode == 'NOT_RUSSIAN_PASSPORT')
-              const Padding(
-                padding: EdgeInsets.only(bottom: 12),
-                child: Text(
-                  'Это не первый разворот внутреннего паспорта РФ.',
-                  style: TextStyle(color: Color(0xFFCF222E)),
-                ),
-              ),
-            const Padding(
-              padding: EdgeInsets.only(bottom: 8),
-              child: Text('Цифровая копия', style: TextStyle(fontWeight: FontWeight.w600)),
+  Widget _reviewStep() {
+    final result = _controller.result;
+    if (result == null) {
+      return const _PlaceholderStep(
+        title: 'Редактирование и проверка',
+        message: 'Сначала распознайте основной разворот и страницу регистрации.',
+      );
+    }
+    return SizedBox.expand(
+      child: GlassPanel(
+        padding: const EdgeInsets.fromLTRB(
+          AppSpacing.lg,
+          AppSpacing.md,
+          AppSpacing.lg,
+          AppSpacing.lg,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+            const Text('Данные паспорта', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16)),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              _resultSummary(result),
+              style: const TextStyle(color: AppColors.muted),
             ),
+            const SizedBox(height: AppSpacing.md),
             if (result.view == 'first_spread' && result.errorCode == null) _identityImages(result),
-            if (_controller.registrationError != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Text(
-                  _controller.registrationError!,
-                  style: const TextStyle(color: Color(0xFFCF222E)),
-                ),
-              ),
             if (_controller.numberMatch != PassportNumberMatch.none) _numberMatchBanner(),
             if (_isRegistrationAddressMissing)
               const Padding(
-                padding: EdgeInsets.only(bottom: 12),
+                padding: EdgeInsets.only(bottom: AppSpacing.md),
                 child: Text(
                   'Адрес прописки не распознан.',
-                  style: TextStyle(color: Color(0xFFCF222E)),
+                  style: TextStyle(color: AppColors.danger),
                 ),
               ),
             for (final spec in kPassportFormFields) _fieldEditor(spec, result),
           ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _fieldEditor(PassportFormSpec spec, OcrResult result) {
+  Widget _navBar() {
+    return Row(
+      children: [
+        OutlinedButton(
+          onPressed: _controller.canGoBack ? _controller.goBack : null,
+          child: const Text('Назад'),
+        ),
+        const Spacer(),
+        FilledButton(
+          onPressed: _controller.canGoNext ? _controller.goNext : null,
+          child: const Text('Далее'),
+        ),
+      ],
+    );
+  }
+
+  Widget _fieldEditor(PassportFormSpec spec, OcrResult result, {bool readOnly = false}) {
     final field = result.fields[spec.id];
     final lowConfidence = (field?.confidence ?? 0) > 0 && (field?.confidence ?? 0) < kLowFieldConfidence;
-    final text =
-        _controller.fieldEdits[spec.id] ?? displayFieldValue(spec.id, field?.value);
+    final text = _controller.fieldEdits[spec.id] ?? displayFieldValue(spec.id, field?.value);
     final multiline = spec.id == 'registrationAddress';
     final missing = _isUnrecognized(spec, text);
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.only(bottom: AppSpacing.lg),
       child: TextFormField(
-        key: ValueKey('${result.requestId}-${spec.id}-$text'),
+        key: ValueKey('${result.requestId}-${spec.id}'),
         initialValue: text,
+        readOnly: readOnly,
         maxLines: multiline ? 4 : 1,
         decoration: InputDecoration(
           labelText: spec.label,
           isDense: true,
-          filled: missing,
-          fillColor: missing ? const Color(0xFFFFF1F0) : null,
+          filled: true,
+          fillColor: missing ? AppColors.missingFill : AppColors.glassStrong,
           enabledBorder: missing
-              ? const OutlineInputBorder(borderSide: BorderSide(color: Color(0xFFCF222E)))
+              ? const OutlineInputBorder(borderSide: BorderSide(color: AppColors.danger))
               : null,
           focusedBorder: missing
-              ? const OutlineInputBorder(borderSide: BorderSide(color: Color(0xFFCF222E), width: 2))
+              ? const OutlineInputBorder(borderSide: BorderSide(color: AppColors.danger, width: 2))
               : null,
           suffixIcon: lowConfidence
-              ? const Icon(Icons.warning_amber_rounded, color: Color(0xFF9A6700))
+              ? const Icon(Icons.warning_amber_rounded, color: AppColors.warning)
               : null,
         ),
-        onChanged: (value) => _controller.updateField(spec.id, value),
+        onChanged: readOnly ? null : (value) => _controller.updateField(spec.id, value),
       ),
     );
   }
@@ -271,62 +432,68 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _identityImages(OcrResult result) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Wrap(
-        spacing: 16,
-        runSpacing: 12,
+      padding: const EdgeInsets.only(bottom: AppSpacing.lg),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _imageChip(
-            bytes: result.photoBytes,
-            emptyLabel: 'Фото не найдено',
-            foundLabel: 'Фотография',
-            icon: Icons.person_outline,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              _imageFrame(
+                bytes: result.photoBytes,
+                icon: Icons.person_outline,
+              ),
+              const SizedBox(width: AppSpacing.lg),
+              _imageFrame(
+                bytes: result.signatureBytes,
+                icon: Icons.draw_outlined,
+                width: 120,
+                height: 56,
+              ),
+            ],
           ),
-          _imageChip(
-            bytes: result.signatureBytes,
-            emptyLabel: 'Подпись не найдена',
-            foundLabel: 'Подпись',
-            icon: Icons.draw_outlined,
-            width: 120,
-            height: 56,
+          const SizedBox(height: AppSpacing.xs),
+          Row(
+            children: [
+              SizedBox(
+                width: 72,
+                child: Text(result.photoBytes == null ? 'Фото не найдено' : 'Фотография'),
+              ),
+              const SizedBox(width: AppSpacing.lg),
+              SizedBox(
+                width: 120,
+                child: Text(result.signatureBytes == null ? 'Подпись не найдена' : 'Подпись'),
+              ),
+            ],
           ),
         ],
       ),
     );
   }
 
-  Widget _imageChip({
+  Widget _imageFrame({
     required Uint8List? bytes,
-    required String emptyLabel,
-    required String foundLabel,
     required IconData icon,
     double width = 72,
     double height = 96,
   }) {
     final missing = bytes == null;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        DecoratedBox(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            border: missing ? Border.all(color: const Color(0xFFCF222E)) : null,
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: missing
-                ? Container(
-                    width: width,
-                    height: height,
-                    color: const Color(0xFFFFF1F0),
-                    child: Icon(icon, color: const Color(0xFFCF222E)),
-                  )
-                : Image.memory(bytes, width: width, height: height, fit: BoxFit.contain),
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(missing ? emptyLabel : foundLabel),
-      ],
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(8),
+        border: missing ? Border.all(color: AppColors.danger) : null,
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: missing
+            ? Container(
+                width: width,
+                height: height,
+                color: AppColors.missingFill,
+                child: Icon(icon, color: AppColors.danger),
+              )
+            : Image.memory(bytes, width: width, height: height, fit: BoxFit.contain),
+      ),
     );
   }
 
@@ -334,55 +501,24 @@ class _HomeScreenState extends State<HomeScreen> {
     final (text, color) = switch (_controller.numberMatch) {
       PassportNumberMatch.match => (
         'Номер совпадает с первым разворотом',
-        const Color(0xFF1A7F37),
+        AppColors.success,
       ),
       PassportNumberMatch.mismatch => (
         'Номер на странице регистрации не совпадает',
-        const Color(0xFFCF222E),
+        AppColors.danger,
       ),
       PassportNumberMatch.missing => (
         'Не удалось сверить номер паспорта на странице регистрации',
-        const Color(0xFF9A6700),
+        AppColors.warning,
       ),
-      PassportNumberMatch.none => ('', const Color(0xFF57606A)),
+      PassportNumberMatch.none => ('', AppColors.muted),
     };
     if (text.isEmpty) {
       return const SizedBox.shrink();
     }
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.only(bottom: AppSpacing.md),
       child: Text(text, style: TextStyle(color: color)),
-    );
-  }
-
-  Widget _progressCard() {
-    final phases = <RecognitionPhase, String>{
-      RecognitionPhase.startingService: 'Запуск сервиса',
-      RecognitionPhase.preparingImage: 'Подготовка изображения',
-      RecognitionPhase.ocr: 'Распознавание',
-      RecognitionPhase.ready: 'Готово',
-    };
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(_controller.statusLabel, style: const TextStyle(fontWeight: FontWeight.w600)),
-            const SizedBox(height: 12),
-            for (final entry in phases.entries)
-              _stageRow(entry.value, _stageState(entry.key)),
-            if (_controller.result != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  _resultSummary(_controller.result!),
-                  style: const TextStyle(color: Color(0xFF57606A)),
-                ),
-              ),
-          ],
-        ),
-      ),
     );
   }
 
@@ -396,58 +532,31 @@ class _HomeScreenState extends State<HomeScreen> {
     }).length;
     return 'Заполнено $filled из ${kPassportFormFields.length}';
   }
+}
 
-  _StageState _stageState(RecognitionPhase stage) {
-    const order = [
-      RecognitionPhase.startingService,
-      RecognitionPhase.preparingImage,
-      RecognitionPhase.ocr,
-      RecognitionPhase.ready,
-    ];
-    final current = order.indexOf(_controller.phase);
-    final target = order.indexOf(stage);
-    if (_controller.phase == RecognitionPhase.idle) {
-      return _StageState.pending;
-    }
-    if (_controller.phase == RecognitionPhase.error) {
-      return target <= current ? _StageState.error : _StageState.pending;
-    }
-    if (current < 0) {
-      return _StageState.pending;
-    }
-    if (target < current) {
-      return _StageState.done;
-    }
-    if (target == current) {
-      return _StageState.active;
-    }
-    return _StageState.pending;
-  }
+class _PlaceholderStep extends StatelessWidget {
+  const _PlaceholderStep({required this.title, required this.message});
 
-  Widget _stageRow(String label, _StageState state) {
-    final icon = switch (state) {
-      _StageState.done => Icons.check_circle,
-      _StageState.active => Icons.autorenew,
-      _StageState.error => Icons.error_outline,
-      _StageState.pending => Icons.radio_button_unchecked,
-    };
-    final color = switch (state) {
-      _StageState.done => Colors.green.shade700,
-      _StageState.active => Theme.of(context).colorScheme.primary,
-      _StageState.error => Colors.red.shade700,
-      _StageState.pending => const Color(0xFF8C959F),
-    };
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
+  final String title;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassPanel(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, size: 18, color: color),
-          const SizedBox(width: 8),
-          Text(label, style: TextStyle(color: color)),
+          const Icon(Icons.lock_outline, size: 36, color: AppColors.muted),
+          const SizedBox(height: AppSpacing.md),
+          Text(title, style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: AppSpacing.sm),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: AppColors.muted),
+          ),
         ],
       ),
     );
   }
 }
-
-enum _StageState { pending, active, done, error }

@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "ru.gfm" "\0"
-            VALUE "FileDescription", "ru_passport" "\0"
+            VALUE "FileDescription", "Nacta паспорт" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "ru_passport" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 ru.gfm. All rights reserved." "\0"
             VALUE "OriginalFilename", "ru_passport.exe" "\0"
-            VALUE "ProductName", "ru_passport" "\0"
+            VALUE "ProductName", "Nacta паспорт" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

@@ -5,40 +5,24 @@ import 'package:ru_passport/core/constants.dart';
 import 'package:ru_passport/domain/ocr_result.dart';
 import 'package:ru_passport/domain/parsed_field.dart';
 import 'package:ru_passport/domain/passport_number.dart';
+import 'package:ru_passport/domain/pipeline_step.dart';
 import 'package:ru_passport/presentation/home_screen.dart';
 
 void main() {
-  testWidgets('home screen shows title and drop zone', (tester) async {
-    tester.view.physicalSize = const Size(1400, 900);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
+  const timings = StageTimings(
+    imageLoading: 1,
+    orientation: 0,
+    preprocessing: 0,
+    ocr: 20,
+    parsing: 1,
+    totalMs: 30,
+  );
 
-    await tester.pumpWidget(PassportApp(controller: RecognitionController()));
-    expect(find.text(AppConstants.appTitle), findsOneWidget);
-    expect(find.text('Перетащите изображение паспорта'), findsOneWidget);
-    expect(find.text('Выбрать файл'), findsWidgets);
-  });
-
-  testWidgets('ready result shows digital copy fields', (tester) async {
-    tester.view.physicalSize = const Size(1400, 900);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    final controller = RecognitionController();
-    controller.phase = RecognitionPhase.ready;
-    controller.result = const OcrResult(
+  OcrResult firstSpread() {
+    return const OcrResult(
       requestId: 'copy-test',
       lines: [],
-      timings: StageTimings(
-        imageLoading: 1,
-        orientation: 12,
-        preprocessing: 0,
-        ocr: 40,
-        parsing: 2,
-        totalMs: 60,
-      ),
+      timings: timings,
       imageWidth: 100,
       imageHeight: 80,
       rotationDegrees: 0,
@@ -50,158 +34,216 @@ void main() {
       fields: {
         'lastName': ParsedField(value: 'ИВАНОВ', confidence: 0.9, sourceRegion: null),
         'firstName': ParsedField(value: 'ИВАН', confidence: 0.9, sourceRegion: null),
+        'series': ParsedField(value: '1234', confidence: 0.9, sourceRegion: null),
+        'number': ParsedField(value: '567890', confidence: 0.9, sourceRegion: null),
       },
     );
+  }
+
+  OcrResult registration({String? address}) {
+    return OcrResult(
+      requestId: 'reg-test',
+      lines: const [],
+      timings: timings,
+      imageWidth: 80,
+      imageHeight: 100,
+      rotationDegrees: 0,
+      modelVersion: 'fake-rdocs-1',
+      provider: 'fake-rdocs',
+      documentType: 'russian_passport',
+      documentConfidence: 0.8,
+      view: 'registration',
+      warnings: address == null || address.isEmpty
+          ? const [
+              {'code': 'ADDRESS_NOT_RECOGNIZED', 'field': 'registrationAddress'},
+            ]
+          : const [],
+      fields: {
+        'number': const ParsedField(value: '567890', confidence: 0.8, sourceRegion: null),
+        if (address != null && address.isNotEmpty)
+          'registrationAddress': ParsedField(value: address, confidence: 0.8, sourceRegion: null),
+      },
+    );
+  }
+
+  void setDesktopView(WidgetTester tester) {
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+  }
+
+  testWidgets('home screen shows title, steps and drop zone', (tester) async {
+    setDesktopView(tester);
+
+    await tester.pumpWidget(PassportApp(controller: RecognitionController()));
+    expect(find.text(AppConstants.appTitle), findsOneWidget);
+    expect(find.text('Разворот'), findsWidgets);
+    expect(find.text('Регистрация'), findsWidgets);
+    expect(find.text('Редактирование и проверка'), findsOneWidget);
+    expect(find.text('Шифрование'), findsOneWidget);
+    expect(find.text('Отправка'), findsOneWidget);
+    expect(find.text('Перетащите основной разворот паспорта'), findsOneWidget);
+    expect(find.text('Выбрать файл'), findsWidgets);
+    expect(find.byKey(const Key('snapshot-firstSpread')), findsOneWidget);
+    expect(find.byKey(const Key('snapshot-registration')), findsOneWidget);
+    expect(find.image(const AssetImage(AppConstants.appIconAsset)), findsOneWidget);
+    expect(find.text('изменено'), findsNothing);
+    expect(find.text('отредактировано'), findsNothing);
+  });
+
+  testWidgets('locked steps and review stay closed until registration', (tester) async {
+    setDesktopView(tester);
+    final controller = RecognitionController();
+    controller.phase = RecognitionPhase.ready;
+    controller.result = firstSpread();
+    controller.firstSpreadPath = '/tmp/first.png';
     controller.fieldEdits['lastName'] = 'ИВАНОВ';
-    controller.fieldEdits['firstName'] = 'ИВАН';
 
     await tester.pumpWidget(PassportApp(controller: controller));
-    expect(find.text('Цифровая копия'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('pipeline-step-encryption')));
+    await tester.tap(find.byKey(const Key('pipeline-step-send')));
+    await tester.tap(find.byKey(const Key('pipeline-step-review')));
+    await tester.pump();
+    expect(controller.currentStep, PipelineStep.firstSpread);
+    expect(find.text('Данные паспорта'), findsNothing);
+    expect(find.text('Адрес регистрации'), findsNothing);
+    expect(
+      tester
+          .widget<EditableText>(
+            find.descendant(
+              of: find.byKey(const ValueKey('copy-test-lastName')),
+              matching: find.byType(EditableText),
+            ),
+          )
+          .readOnly,
+      isTrue,
+    );
+    expect(find.text('ИВАНОВ'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('pipeline-step-registration')));
+    await tester.pump();
+    expect(controller.currentStep, PipelineStep.registration);
+    expect(find.text('Перетащите страницу регистрации'), findsOneWidget);
+  });
+
+  testWidgets('review shows digital copy after registration', (tester) async {
+    setDesktopView(tester);
+    final controller = RecognitionController();
+    controller.phase = RecognitionPhase.ready;
+    controller.result = firstSpread();
+    controller.firstSpreadPath = '/tmp/first.png';
+    controller.registrationPath = '/tmp/reg.png';
+    controller.registrationResult = registration(address: 'Г. МОСКВА');
+    controller.currentStep = PipelineStep.review;
+    controller.fieldEdits['lastName'] = 'ИВАНОВ';
+    controller.fieldEdits['firstName'] = 'ИВАН';
+    controller.fieldEdits['registrationAddress'] = 'Г. МОСКВА';
+
+    await tester.pumpWidget(PassportApp(controller: controller));
+    expect(find.text('Данные паспорта'), findsOneWidget);
     expect(find.text('Фамилия'), findsOneWidget);
-    expect(find.textContaining('Заполнено 2 из'), findsOneWidget);
+    expect(find.textContaining('Заполнено 5 из'), findsOneWidget);
     expect(find.text('Определение ориентации'), findsNothing);
     expect(find.textContaining('Поворот'), findsNothing);
     expect(find.text('Отладка'), findsNothing);
-    expect(find.text('Добавить страницу регистрации'), findsOneWidget);
     expect(find.text('Фото не найдено'), findsOneWidget);
     expect(find.text('Подпись не найдена'), findsOneWidget);
     expect(find.text('Адрес регистрации'), findsOneWidget);
   });
 
   testWidgets('mismatch banner keeps address in the form', (tester) async {
-    tester.view.physicalSize = const Size(1400, 900);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
+    setDesktopView(tester);
     final controller = RecognitionController();
     controller.phase = RecognitionPhase.ready;
-    controller.result = const OcrResult(
-      requestId: 'copy-test',
-      lines: [],
-      timings: StageTimings(
-        imageLoading: 1,
-        orientation: 0,
-        preprocessing: 0,
-        ocr: 40,
-        parsing: 2,
-        totalMs: 60,
-      ),
-      imageWidth: 100,
-      imageHeight: 80,
-      rotationDegrees: 0,
-      modelVersion: 'fake-rdocs-1',
-      provider: 'fake-rdocs',
-      documentType: 'russian_passport',
-      documentConfidence: 0.9,
-      view: 'first_spread',
-      fields: {
-        'lastName': ParsedField(value: 'ИВАНОВ', confidence: 0.9, sourceRegion: null),
-        'series': ParsedField(value: '1234', confidence: 0.9, sourceRegion: null),
-        'number': ParsedField(value: '567890', confidence: 0.9, sourceRegion: null),
-      },
-    );
+    controller.result = firstSpread();
+    controller.firstSpreadPath = '/tmp/first.png';
+    controller.registrationPath = '/tmp/reg.png';
+    controller.currentStep = PipelineStep.review;
     controller.fieldEdits['lastName'] = 'ИВАНОВ';
     controller.fieldEdits['series'] = '1234';
     controller.fieldEdits['number'] = '567890';
     controller.fieldEdits['registrationAddress'] = 'Г. МОСКВА, УЛ. ТВЕРСКАЯ Д. 1';
     controller.numberMatch = PassportNumberMatch.mismatch;
-    controller.registrationResult = const OcrResult(
-      requestId: 'reg-test',
-      lines: [],
-      timings: StageTimings(
-        imageLoading: 1,
-        orientation: 0,
-        preprocessing: 0,
-        ocr: 20,
-        parsing: 1,
-        totalMs: 30,
-      ),
-      imageWidth: 80,
-      imageHeight: 100,
-      rotationDegrees: 0,
-      modelVersion: 'fake-rdocs-1',
-      provider: 'fake-rdocs',
-      documentType: 'russian_passport',
-      documentConfidence: 0.8,
-      view: 'registration',
-      fields: {
-        'registrationAddress': ParsedField(
-          value: 'Г. МОСКВА, УЛ. ТВЕРСКАЯ Д. 1',
-          confidence: 0.8,
-          sourceRegion: null,
-        ),
-      },
-    );
+    controller.registrationResult = registration(address: 'Г. МОСКВА, УЛ. ТВЕРСКАЯ Д. 1');
 
     await tester.pumpWidget(PassportApp(controller: controller));
     expect(find.text('Номер на странице регистрации не совпадает'), findsOneWidget);
     expect(find.text('Г. МОСКВА, УЛ. ТВЕРСКАЯ Д. 1'), findsOneWidget);
-    expect(find.text('Добавить страницу регистрации'), findsOneWidget);
   });
 
   testWidgets('empty registration address shows warning', (tester) async {
-    tester.view.physicalSize = const Size(1400, 900);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
+    setDesktopView(tester);
     final controller = RecognitionController();
     controller.phase = RecognitionPhase.ready;
-    controller.result = const OcrResult(
-      requestId: 'copy-test',
-      lines: [],
-      timings: StageTimings(
-        imageLoading: 1,
-        orientation: 0,
-        preprocessing: 0,
-        ocr: 40,
-        parsing: 2,
-        totalMs: 60,
-      ),
-      imageWidth: 100,
-      imageHeight: 80,
-      rotationDegrees: 0,
-      modelVersion: 'fake-rdocs-1',
-      provider: 'fake-rdocs',
-      documentType: 'russian_passport',
-      documentConfidence: 0.9,
-      view: 'first_spread',
-      fields: {
-        'lastName': ParsedField(value: 'ИВАНОВ', confidence: 0.9, sourceRegion: null),
-        'number': ParsedField(value: '567890', confidence: 0.9, sourceRegion: null),
-      },
-    );
+    controller.result = firstSpread();
+    controller.firstSpreadPath = '/tmp/first.png';
+    controller.registrationPath = '/tmp/reg.png';
+    controller.currentStep = PipelineStep.review;
     controller.fieldEdits['lastName'] = 'ИВАНОВ';
     controller.fieldEdits['number'] = '567890';
     controller.fieldEdits['registrationAddress'] = '';
-    controller.registrationResult = const OcrResult(
-      requestId: 'reg-empty',
-      lines: [],
-      timings: StageTimings(
-        imageLoading: 1,
-        orientation: 0,
-        preprocessing: 0,
-        ocr: 20,
-        parsing: 1,
-        totalMs: 30,
-      ),
-      imageWidth: 80,
-      imageHeight: 100,
-      rotationDegrees: 0,
-      modelVersion: 'fake-rdocs-1',
-      provider: 'fake-rdocs',
-      documentType: 'russian_passport',
-      documentConfidence: 0.8,
-      view: 'registration',
-      warnings: [
-        {'code': 'ADDRESS_NOT_RECOGNIZED', 'field': 'registrationAddress'},
-      ],
-      fields: const {},
-    );
+    controller.registrationResult = registration();
 
     await tester.pumpWidget(PassportApp(controller: controller));
     expect(find.text('Адрес прописки не распознан.'), findsOneWidget);
     expect(find.text('[рукопись]'), findsNothing);
+  });
+
+  testWidgets('both snapshot slots stay visible', (tester) async {
+    setDesktopView(tester);
+    final controller = RecognitionController();
+    controller.phase = RecognitionPhase.ready;
+    controller.result = firstSpread();
+    controller.registrationResult = registration(address: 'Г. МОСКВА');
+    controller.firstSpreadPath = '/tmp/first.png';
+    controller.registrationPath = '/tmp/reg.png';
+    controller.currentStep = PipelineStep.review;
+
+    await tester.pumpWidget(PassportApp(controller: controller));
+    expect(find.byKey(const Key('snapshot-firstSpread')), findsOneWidget);
+    expect(find.byKey(const Key('snapshot-registration')), findsOneWidget);
+    expect(find.text('Снимок добавлен'), findsNWidgets(2));
+  });
+
+  testWidgets('registration step hides missing number banner', (tester) async {
+    setDesktopView(tester);
+    final controller = RecognitionController();
+    controller.phase = RecognitionPhase.ready;
+    controller.result = firstSpread();
+    controller.firstSpreadPath = '/tmp/first.png';
+    controller.registrationPath = '/tmp/reg.png';
+    controller.registrationResult = registration();
+    controller.currentStep = PipelineStep.registration;
+    controller.numberMatch = PassportNumberMatch.missing;
+    controller.fieldEdits['registrationAddress'] = '';
+
+    await tester.pumpWidget(PassportApp(controller: controller));
+    expect(find.text('Не удалось сверить номер паспорта на странице регистрации'), findsNothing);
+    expect(find.text('Адрес прописки не распознан.'), findsOneWidget);
+  });
+
+  testWidgets('review field keeps focus while typing', (tester) async {
+    setDesktopView(tester);
+    final controller = RecognitionController();
+    controller.phase = RecognitionPhase.ready;
+    controller.result = firstSpread();
+    controller.firstSpreadPath = '/tmp/first.png';
+    controller.registrationPath = '/tmp/reg.png';
+    controller.registrationResult = registration(address: 'Г. МОСКВА');
+    controller.currentStep = PipelineStep.review;
+    controller.fieldEdits['lastName'] = 'ИВАНОВ';
+    controller.fieldEdits['registrationAddress'] = 'Г. МОСКВА';
+
+    await tester.pumpWidget(PassportApp(controller: controller));
+    final field = find.byKey(const ValueKey('copy-test-lastName'));
+    await tester.tap(field);
+    await tester.enterText(field, 'ПЕТРОВ');
+    await tester.pump();
+    final editable = tester.state<EditableTextState>(
+      find.descendant(of: field, matching: find.byType(EditableText)),
+    );
+    expect(editable.widget.controller.value.text, 'ПЕТРОВ');
+    expect(editable.widget.focusNode.hasFocus, isTrue);
   });
 }
