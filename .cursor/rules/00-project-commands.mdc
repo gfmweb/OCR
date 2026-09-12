@@ -1,0 +1,28 @@
+---
+description: Команды и конвенции проекта OCR (Flutter + локальный Python)
+alwaysApply: true
+---
+
+# Project Commands
+
+- Python venv: `cd python_service && uv sync --python 3.12`
+- Python tests: `cd python_service && uv run pytest`
+- Python lint: `cd python_service && uv run ruff check .`
+- Flutter: из корня репозитория, `flutter run -d linux`
+- Flutter tests: `flutter test`
+- Flutter lint: `flutter analyze`
+- Docker Compose в этом проекте нет. OCR-сервис слушает только `127.0.0.1`.
+- Не коммитить `.env`, модели, реальные паспорта. Использовать `.env.example`.
+
+# Architecture
+
+- Desktop: Flutter (Linux/Windows, macOS позже)
+- OCR: локальный Python FastAPI, `OCRProvider` → `PaddleOCRProvider`
+- Parser не зависит от конкретного OCR engine
+- Паспортные изображения и текст не покидают машину, не пишутся в логи
+
+# Quality
+
+- Язык ответов — русский; идентификаторы кода — English
+- Тесты на рисковое/новое поведение
+- Перед PR: code-reviewer + security-performance-auditor

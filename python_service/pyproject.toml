@@ -1,0 +1,53 @@
+[project]
+name = "ru-passport-ocr-service"
+version = "0.1.0"
+description = "Local-only FastAPI OCR service for Russian passport recognition"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "numpy>=2.0",
+    "opencv-python-headless>=4.10",
+    "paddleocr>=3.0",
+    "paddlepaddle==3.2.2",
+    "pillow>=11.0",
+    "pydantic-settings>=2.6",
+    "russian-docs-ocr",
+    "python-multipart>=0.0.12",
+    "uvicorn[standard]>=0.32",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+[tool.uv]
+package = false
+
+[[tool.uv.index]]
+name = "paddle-cpu"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cpu/"
+explicit = true
+
+[tool.uv.sources]
+paddlepaddle = { index = "paddle-cpu" }
+russian-docs-ocr = { git = "https://github.com/protei300/RussianDocsOCR.git", tag = "v4.4.1" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "integration: uses real PaddleOCR models and is slow on CPU",
+]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["B008"]
