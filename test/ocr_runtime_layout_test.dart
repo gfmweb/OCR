@@ -82,6 +82,43 @@ void main() {
     expect(layout.pythonServiceDir().path, p.join(repo.path, 'python_service'));
   });
 
+  test('uses Windows venv next to the executable', () {
+    final bundle = Directory(p.join(root.path, 'win-bundle'))..createSync();
+    File(
+      p.join(bundle.path, 'python_service', '.venv', 'Scripts', 'python.exe'),
+    ).createSync(recursive: true);
+
+    final layout = OcrRuntimeLayout(
+      executablePath: p.join(bundle.path, 'ru_passport.exe'),
+      currentDirectory: Directory(p.join(root.path, 'empty-win'))..createSync(),
+    );
+    expect(
+      layout.pythonServiceDir().path,
+      p.join(bundle.path, 'python_service'),
+    );
+    expect(
+      layout.pythonExecutable(),
+      p.join(bundle.path, 'python_service', '.venv', 'Scripts', 'python.exe'),
+    );
+  });
+
+  test('NACTA_HOME prefers Windows venv python.exe', () {
+    final home = Directory(p.join(root.path, 'nacta-home'))..createSync();
+    File(
+      p.join(home.path, 'python_service', '.venv', 'Scripts', 'python.exe'),
+    ).createSync(recursive: true);
+
+    final layout = OcrRuntimeLayout(
+      nactaHome: home.path,
+      executablePath: p.join(root.path, 'elsewhere', 'ru_passport.exe'),
+      currentDirectory: Directory(p.join(root.path, 'empty-home'))..createSync(),
+    );
+    expect(
+      layout.pythonExecutable(),
+      p.join(home.path, 'python_service', '.venv', 'Scripts', 'python.exe'),
+    );
+  });
+
   test('bundled layout without venv asks to reinstall the package', () {
     Directory(
       p.join(root.path, 'opt', 'nacta-passport', 'python_service'),

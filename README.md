@@ -17,7 +17,6 @@
 - Автоповорот 0/90/180/270 уже есть; мелкий произвольный угол пока нет.
 - Нет разбора полей (ФИО, серия, номер).
 - Нет multi-OCR fusion и calibrated confidence.
-- Windows packaging ещё не сделан.
 - На CPU (особенно 2 ядра) первый запуск и OCR могут занимать десятки секунд.
 
 ## Архитектура среза
@@ -116,7 +115,33 @@ sudo apt install ./dist/nacta-passport_1.0.0_amd64.deb
 nacta-passport
 ```
 
-На целевой машине: x86_64, Ubuntu 22.04 / Debian 12 или новее, несколько ГБ RAM и свободного диска. После установки интернет не нужен; первый запуск всё равно может быть долгим — модели поднимаются в память. Windows-пакет по-прежнему собирается только на Windows.
+На целевой машине: x86_64, Ubuntu 22.04 / Debian 12 или новее, несколько ГБ RAM и свободного диска. После установки интернет не нужен; первый запуск всё равно может быть долгим — модели поднимаются в память.
+
+## Windows zip (amd64)
+
+Полный offline-пакет, как Linux .deb: Flutter-клиент, Python 3.12, venv и веса OCR. Собирается **только на Windows** (`flutter build windows` с Linux недоступен). `flutter build windows` без скрипта упаковки даёт лишь UI — OCR не найдёт `.venv`.
+
+Нужны уже скачанные модели (`python_service/models/`). Их можно скачать на этой машине или скопировать каталог с Linux:
+
+```powershell
+cd python_service
+uv sync --python 3.12
+uv run python scripts/download_rdocs_models.py
+uv run python scripts/download_models.py
+cd ..
+.\scripts\package_windows.ps1
+```
+
+Результат: `dist/nacta-passport-windows-x64/` и `dist/nacta-passport_1.0.0_windows_amd64.zip`.
+
+Запуск:
+
+```text
+распаковать zip
+nacta-passport.cmd
+```
+
+На целевой машине: 64-bit Windows, [Visual C++ Redistributable 2015–2022 x64](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist), несколько ГБ RAM и диска. После сборки интернет не нужен; первый запуск может быть долгим — модели поднимаются в память. Не запускайте `ru_passport.exe` из `build\windows\...` без `python_service`.
 
 ## Конфигурация
 
