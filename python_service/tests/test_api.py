@@ -26,6 +26,8 @@ def test_health_ok(client, settings) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "ready"
+    assert payload["stage"] == "ready"
+    assert payload["progress"] == 100
     assert payload["provider"] == "fake"
     assert payload["rdocs_ready"] is True
     assert "llm_ready" not in payload

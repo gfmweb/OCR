@@ -91,12 +91,13 @@ class _StepDot extends StatelessWidget {
             ),
             const SizedBox(height: AppSpacing.xs),
             SizedBox(
-              width: 92,
+              width: 136,
               child: Text(
                 step.label,
                 textAlign: TextAlign.center,
                 maxLines: 2,
-                overflow: TextOverflow.ellipsis,
+                softWrap: true,
+                overflow: TextOverflow.clip,
                 style: TextStyle(
                   fontSize: 11,
                   height: 1.15,

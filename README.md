@@ -17,7 +17,7 @@
 - Автоповорот 0/90/180/270 уже есть; мелкий произвольный угол пока нет.
 - Нет разбора полей (ФИО, серия, номер).
 - Нет multi-OCR fusion и calibrated confidence.
-- Windows packaging и bundled Python runtime ещё не сделаны.
+- Windows packaging ещё не сделан.
 - На CPU (особенно 2 ядра) первый запуск и OCR могут занимать десятки секунд.
 
 ## Архитектура среза
@@ -93,6 +93,30 @@ flutter test
 ```
 
 Реальные паспорта в git не класть. Для evaluation позже используйте локальный каталог вне репозитория.
+
+## Linux .deb (Ubuntu/Debian amd64 22.04+)
+
+Полный offline-пакет: Flutter-клиент, Python 3.12, venv и веса OCR. Не для Fedora, Arch, ARM и Alpine. Сборка идёт в Docker `ubuntu:22.04`, чтобы glibc не был привязан к Ubuntu 26.04.
+
+Нужны уже скачанные модели (`python_service/models/`, обычно несколько сотен МБ или больше):
+
+```bash
+cd python_service
+uv sync --python 3.12
+uv run python scripts/download_rdocs_models.py
+uv run python scripts/download_models.py
+cd ..
+./scripts/package_linux_deb.sh
+```
+
+Установка:
+
+```bash
+sudo apt install ./dist/nacta-passport_1.0.0_amd64.deb
+nacta-passport
+```
+
+На целевой машине: x86_64, Ubuntu 22.04 / Debian 12 или новее, несколько ГБ RAM и свободного диска. После установки интернет не нужен; первый запуск всё равно может быть долгим — модели поднимаются в память. Windows-пакет по-прежнему собирается только на Windows.
 
 ## Конфигурация
 

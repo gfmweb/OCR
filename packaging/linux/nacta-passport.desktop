@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Nacta паспорт
+Comment=Локальное распознавание паспорта РФ
+Exec=/usr/bin/nacta-passport
+Icon=nacta-passport
+Terminal=false
+Categories=Office;Utility;
+StartupNotify=true
+Keywords=passport;ocr;nacta;

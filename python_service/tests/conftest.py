@@ -38,8 +38,15 @@ class FakeFieldsProvider:
     calls: int = 0
     last_shape: tuple[int, ...] | None = field(default=None, init=False)
 
-    def warmup(self) -> None:
+    def warmup(self, on_stage=None) -> None:
+        if on_stage is not None:
+            on_stage("loading_models")
+            on_stage("warmup_inference")
+            on_stage("ready")
         self.ready = True
+
+    def release(self) -> None:
+        self.ready = False
 
     def process(self, rgb_image: np.ndarray) -> DocumentFieldsSnapshot:
         self.calls += 1

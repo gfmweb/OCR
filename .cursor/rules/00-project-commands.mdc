@@ -12,6 +12,7 @@ alwaysApply: true
 - Flutter tests: `flutter test`
 - Flutter lint: `flutter analyze`
 - Docker Compose в этом проекте нет. OCR-сервис слушает только `127.0.0.1`.
+- Linux .deb собирается скриптом `scripts/package_linux_deb.sh` в Docker ubuntu:22.04.
 - Не коммитить `.env`, модели, реальные паспорта. Использовать `.env.example`.
 
 # Architecture

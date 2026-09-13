@@ -6,6 +6,7 @@
 
 - Python: `cd python_service && uv sync --python 3.12 && uv run python -m app`
 - Flutter: `flutter run -d linux` из корня
+- Linux .deb: `./scripts/package_linux_deb.sh` (Docker ubuntu:22.04, нужны веса в `python_service/models/`)
 - Dev без автозапуска Python: `OCR_SERVICE_URL=http://127.0.0.1:8765` и `OCR_SESSION_TOKEN`
 
 ## Тесты
@@ -22,3 +23,4 @@
 - Не логировать изображения, OCR-текст, ФИО, даты, серию/номер
 - Реальные паспорта не коммитить
 - Windows packaging и полный passport pipeline — следующие фазы
+- Linux .deb: Ubuntu/Debian amd64, пол Ubuntu 22.04

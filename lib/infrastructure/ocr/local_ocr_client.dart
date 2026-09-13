@@ -1,23 +1,32 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-import 'package:path/path.dart' as p;
 import 'package:ru_passport/core/constants.dart';
 import 'package:ru_passport/core/errors.dart';
 import 'package:ru_passport/domain/ocr_result.dart';
+import 'package:ru_passport/infrastructure/ocr/ocr_runtime_layout.dart';
+import 'package:ru_passport/infrastructure/ocr/ocr_service_status.dart';
+
+typedef OcrStatusCallback = void Function(OcrServiceStatus status);
 
 class LocalOcrClient {
   LocalOcrClient({
     http.Client? httpClient,
     this.externalBaseUrl,
     this.externalToken,
+    this.shutdownWait = const Duration(seconds: 8),
+    this.killWait = const Duration(seconds: 2),
   }) : _http = httpClient ?? http.Client();
 
   final http.Client _http;
   final String? externalBaseUrl;
   final String? externalToken;
+  final Duration shutdownWait;
+  final Duration killWait;
 
   Process? _process;
   String _token = '';
@@ -25,16 +34,38 @@ class LocalOcrClient {
     'http://${AppConstants.defaultHost}:${AppConstants.defaultPort}',
   );
   bool _started = false;
+  bool _httpClosed = false;
+  bool _ownsProcess = false;
 
   String get token => _token;
 
   Uri get baseUri => _baseUri;
 
-  Future<void> ensureStarted() async {
+  @visibleForTesting
+  void debugAttachOwnedProcess({
+    required Process process,
+    required Uri baseUri,
+    required String token,
+  }) {
+    _process = process;
+    _ownsProcess = true;
+    _baseUri = baseUri;
+    _token = token;
+    _started = true;
+  }
+
+  Future<void> ensureStarted({OcrStatusCallback? onStatus}) async {
     if (_started) {
-      await _waitHealthy();
+      await _waitHealthy(onStatus: onStatus);
       return;
     }
+    onStatus?.call(
+      const OcrServiceStatus(
+        stage: 'starting_server',
+        progress: 10,
+        ready: false,
+      ),
+    );
     final envUrl = externalBaseUrl ?? Platform.environment['OCR_SERVICE_URL'];
     final envToken = externalToken ?? Platform.environment['OCR_SESSION_TOKEN'];
     if (envUrl != null && envUrl.isNotEmpty) {
@@ -45,12 +76,13 @@ class LocalOcrClient {
           'Задан OCR_SERVICE_URL, но нет OCR_SESSION_TOKEN.',
         );
       }
-      await _waitHealthy();
+      await _waitHealthy(onStatus: onStatus);
       _started = true;
       return;
     }
 
-    final python = await _pythonExecutable();
+    final layout = OcrRuntimeLayout.platform();
+    final python = layout.pythonExecutable();
     _token = _generateToken();
     _baseUri = Uri(
       scheme: 'http',
@@ -60,7 +92,7 @@ class LocalOcrClient {
     _process = await Process.start(
       python,
       const ['-m', 'app'],
-      workingDirectory: _pythonServiceDir().path,
+      workingDirectory: layout.pythonServiceDir().path,
       environment: {
         ...Platform.environment,
         'OCR_SESSION_TOKEN': _token,
@@ -69,10 +101,11 @@ class LocalOcrClient {
         'PYTHONUNBUFFERED': '1',
       },
     );
+    _ownsProcess = true;
     _process!.stdout.listen((_) {});
     _process!.stderr.listen((_) {});
     try {
-      await _waitHealthy();
+      await _waitHealthy(onStatus: onStatus);
     } catch (error) {
       await dispose();
       throw OcrException(
@@ -83,13 +116,19 @@ class LocalOcrClient {
     _started = true;
   }
 
-  Future<OcrResult> recognizeFile(String filePath, {String page = 'first_spread'}) async {
+  Future<OcrResult> recognizeFile(
+    String filePath, {
+    String page = 'first_spread',
+  }) async {
     await ensureStarted();
-    final request = http.MultipartRequest('POST', _baseUri.resolve('/api/v1/recognize'))
-      ..headers['Authorization'] = 'Bearer $_token'
-      ..fields['page'] = page
-      ..files.add(await http.MultipartFile.fromPath('image', filePath));
-    final streamed = await _http.send(request).timeout(AppConstants.recognizeTimeout);
+    final request =
+        http.MultipartRequest('POST', _baseUri.resolve('/api/v1/recognize'))
+          ..headers['Authorization'] = 'Bearer $_token'
+          ..fields['page'] = page
+          ..files.add(await http.MultipartFile.fromPath('image', filePath));
+    final streamed = await _http
+        .send(request)
+        .timeout(AppConstants.recognizeTimeout);
     final body = await streamed.stream.bytesToString();
     if (streamed.statusCode != 200) {
       throw OcrException(
@@ -102,19 +141,39 @@ class LocalOcrClient {
 
   Future<void> dispose() async {
     _started = false;
+    await _requestShutdown();
     final process = _process;
     _process = null;
-    if (process != null) {
-      process.kill();
-      await process.exitCode.timeout(
-        const Duration(seconds: 5),
-        onTimeout: () => -1,
-      );
+    if (_ownsProcess && process != null) {
+      try {
+        await process.exitCode.timeout(shutdownWait);
+      } on TimeoutException {
+        process.kill(ProcessSignal.sigkill);
+        await process.exitCode.timeout(killWait, onTimeout: () => -1);
+      }
     }
-    _http.close();
+    _ownsProcess = false;
+    if (!_httpClosed) {
+      _http.close();
+      _httpClosed = true;
+    }
   }
 
-  Future<void> _waitHealthy() async {
+  Future<void> _requestShutdown() async {
+    if (_httpClosed || _token.isEmpty) {
+      return;
+    }
+    try {
+      await _http
+          .post(
+            _baseUri.resolve('/shutdown'),
+            headers: {'Authorization': 'Bearer $_token'},
+          )
+          .timeout(const Duration(seconds: 2));
+    } catch (_) {}
+  }
+
+  Future<void> _waitHealthy({OcrStatusCallback? onStatus}) async {
     final deadline = DateTime.now().add(AppConstants.serviceReadyTimeout);
     Object? lastError;
     while (DateTime.now().isBefore(deadline)) {
@@ -127,12 +186,28 @@ class LocalOcrClient {
             .timeout(const Duration(seconds: 2));
         if (response.statusCode == 200) {
           final payload = jsonDecode(response.body) as Map<String, dynamic>;
-          if (payload['status'] == 'ready') {
+          final status = payload['status'] as String? ?? '';
+          final stage = payload['stage'] as String? ?? 'starting_server';
+          final progress = (payload['progress'] as num?)?.toInt() ?? 15;
+          onStatus?.call(
+            OcrServiceStatus(
+              stage: stage,
+              progress: progress.clamp(0, 100),
+              ready: status == 'ready',
+            ),
+          );
+          if (status == 'ready') {
             return;
+          }
+          if (status == 'error') {
+            throw const OcrException('Не удалось загрузить модели OCR.');
           }
         }
         lastError = 'HTTP ${response.statusCode}';
       } catch (error) {
+        if (error is OcrException) {
+          rethrow;
+        }
         lastError = error;
       }
       await Future<void>.delayed(AppConstants.healthPollInterval);
@@ -141,35 +216,6 @@ class LocalOcrClient {
       'Таймаут ожидания OCR-сервиса. $lastError',
       code: 'OCR_FAILED',
     );
-  }
-
-  Future<String> _pythonExecutable() async {
-    final serviceDir = _pythonServiceDir();
-    final candidates = [
-      p.join(serviceDir.path, '.venv', 'bin', 'python'),
-      p.join(serviceDir.path, '.venv', 'Scripts', 'python.exe'),
-    ];
-    for (final candidate in candidates) {
-      if (File(candidate).existsSync()) {
-        return candidate;
-      }
-    }
-    throw const OcrException(
-      'Не найден python_service/.venv. Выполните: cd python_service && uv sync --python 3.12',
-    );
-  }
-
-  Directory _pythonServiceDir() {
-    var dir = Directory.current;
-    for (var i = 0; i < 8; i++) {
-      final service = Directory(p.join(dir.path, 'python_service'));
-      final pubspec = File(p.join(dir.path, 'pubspec.yaml'));
-      if (service.existsSync() && pubspec.existsSync()) {
-        return service;
-      }
-      dir = dir.parent;
-    }
-    throw const OcrException('Не найден каталог python_service рядом с pubspec.yaml.');
   }
 
   String _generateToken() {
@@ -183,6 +229,7 @@ class LocalOcrClient {
     return switch (code) {
       'IMAGE_DECODE_FAILED' => 'Не удалось прочитать изображение.',
       'IMAGE_TOO_LARGE' => 'Изображение слишком большое.',
+      'SERVICE_STARTING' => 'Модели OCR ещё загружаются.',
       'OCR_FAILED' => 'Не удалось распознать текст.',
       _ => 'Не удалось распознать текст.',
     };

@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:typed_data';
+import 'dart:ui' show AppExitResponse;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -6,12 +8,12 @@ import 'package:ru_passport/application/recognition_controller.dart';
 import 'package:ru_passport/core/constants.dart';
 import 'package:ru_passport/domain/ocr_result.dart';
 import 'package:ru_passport/domain/parsed_field.dart';
-import 'package:ru_passport/domain/passport_number.dart';
 import 'package:ru_passport/domain/pipeline_step.dart';
 import 'package:ru_passport/presentation/theme/app_theme.dart';
 import 'package:ru_passport/presentation/theme/tokens.dart';
 import 'package:ru_passport/presentation/widgets/glass_panel.dart';
 import 'package:ru_passport/presentation/widgets/image_drop_zone.dart';
+import 'package:ru_passport/presentation/widgets/service_loading_panel.dart';
 import 'package:ru_passport/presentation/widgets/snapshot_strip.dart';
 import 'package:ru_passport/presentation/widgets/step_rail.dart';
 
@@ -43,23 +45,44 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   late final RecognitionController _controller;
   late final bool _ownsController;
+  AppLifecycleListener? _lifecycle;
+  bool _clientDisposed = false;
+
+  static const double _photoColumnWidth = 112;
+  static const double _signatureColumnWidth = 140;
 
   @override
   void initState() {
     super.initState();
     _ownsController = widget.controller == null;
-    _controller = widget.controller ?? RecognitionController();
+    _controller =
+        widget.controller ?? RecognitionController(serviceReady: false);
     _controller.addListener(_onUpdate);
+    if (_ownsController) {
+      unawaited(_controller.prepareService());
+      _lifecycle = AppLifecycleListener(onExitRequested: _onExitRequested);
+    }
   }
 
   @override
   void dispose() {
+    _lifecycle?.dispose();
     _controller.removeListener(_onUpdate);
     if (_ownsController) {
-      _controller.disposeClient();
+      if (!_clientDisposed) {
+        unawaited(_controller.disposeClient());
+      }
       _controller.dispose();
     }
     super.dispose();
+  }
+
+  Future<AppExitResponse> _onExitRequested() async {
+    if (_ownsController && !_clientDisposed) {
+      _clientDisposed = true;
+      await _controller.disposeClient();
+    }
+    return AppExitResponse.exit;
   }
 
   void _onUpdate() {
@@ -107,62 +130,76 @@ class _HomeScreenState extends State<HomeScreen> {
         body: SafeArea(
           child: Padding(
             padding: const EdgeInsets.all(AppSpacing.lg),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+            child: Stack(
               children: [
-                Row(
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Image.asset(
-                      AppConstants.appIconAsset,
-                      width: 32,
-                      height: 32,
-                      filterQuality: FilterQuality.high,
+                    Row(
+                      children: [
+                        Image.asset(
+                          AppConstants.appIconAsset,
+                          width: 32,
+                          height: 32,
+                          filterQuality: FilterQuality.high,
+                        ),
+                        const SizedBox(width: AppSpacing.sm),
+                        Text(
+                          AppConstants.appTitle,
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                      ],
                     ),
-                    const SizedBox(width: AppSpacing.sm),
-                    Text(
-                      AppConstants.appTitle,
-                      style: Theme.of(context).textTheme.titleLarge,
+                    const SizedBox(height: AppSpacing.md),
+                    GlassPanel(
+                      padding: const EdgeInsets.fromLTRB(
+                        AppSpacing.md,
+                        AppSpacing.md,
+                        AppSpacing.md,
+                        AppSpacing.sm,
+                      ),
+                      child: StepRail(
+                        current: _controller.currentStep,
+                        canSelect: _controller.canSelectStep,
+                        isComplete: (step) => switch (step) {
+                          PipelineStep.firstSpread =>
+                            _controller.hasSuccessfulFirstSpread,
+                          PipelineStep.registration =>
+                            _controller.hasSuccessfulRegistration,
+                          PipelineStep.review =>
+                            _controller.hasEncryptedDocument ||
+                                _controller.currentStep ==
+                                    PipelineStep.encryption,
+                          PipelineStep.encryption =>
+                            _controller.hasEncryptedDocument,
+                          PipelineStep.send => false,
+                        },
+                        onSelect: _controller.selectStep,
+                      ),
                     ),
+                    const SizedBox(height: AppSpacing.md),
+                    SnapshotStrip(
+                      firstSpreadPath: _controller.firstSpreadPath,
+                      registrationPath: _controller.registrationPath,
+                      currentStep: _controller.currentStep,
+                      canSelect: _controller.canSelectStep,
+                      onSelect: _controller.selectStep,
+                    ),
+                    const SizedBox(height: AppSpacing.md),
+                    Expanded(child: _stepBody()),
+                    const SizedBox(height: AppSpacing.md),
+                    _navBar(),
                   ],
                 ),
-                const SizedBox(height: AppSpacing.md),
-                GlassPanel(
-                  padding: const EdgeInsets.fromLTRB(
-                    AppSpacing.md,
-                    AppSpacing.md,
-                    AppSpacing.md,
-                    AppSpacing.sm,
+                if (!_controller.serviceReady)
+                  Positioned.fill(
+                    child: ServiceLoadingPanel(
+                      progress: _controller.serviceProgress / 100,
+                      stageLabel: _controller.serviceStageLabel,
+                      errorText: _controller.serviceError,
+                      onRetry: _controller.prepareService,
+                    ),
                   ),
-                  child: StepRail(
-                    current: _controller.currentStep,
-                    canSelect: _controller.canSelectStep,
-                    isComplete: (step) => switch (step) {
-                      PipelineStep.firstSpread =>
-                        _controller.hasSuccessfulFirstSpread,
-                      PipelineStep.registration =>
-                        _controller.hasSuccessfulRegistration,
-                      PipelineStep.review =>
-                        _controller.hasEncryptedDocument ||
-                            _controller.currentStep == PipelineStep.encryption,
-                      PipelineStep.encryption =>
-                        _controller.hasEncryptedDocument,
-                      PipelineStep.send => false,
-                    },
-                    onSelect: _controller.selectStep,
-                  ),
-                ),
-                const SizedBox(height: AppSpacing.md),
-                SnapshotStrip(
-                  firstSpreadPath: _controller.firstSpreadPath,
-                  registrationPath: _controller.registrationPath,
-                  currentStep: _controller.currentStep,
-                  canSelect: _controller.canSelectStep,
-                  onSelect: _controller.selectStep,
-                ),
-                const SizedBox(height: AppSpacing.md),
-                Expanded(child: _stepBody()),
-                const SizedBox(height: AppSpacing.md),
-                _navBar(),
               ],
             ),
           ),
@@ -326,9 +363,6 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (_controller.numberMatch == PassportNumberMatch.match ||
-            _controller.numberMatch == PassportNumberMatch.mismatch)
-          _numberMatchBanner(),
         if (_isRegistrationAddressMissing)
           const Padding(
             padding: EdgeInsets.only(bottom: AppSpacing.md),
@@ -374,8 +408,6 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(height: AppSpacing.md),
               if (result.view == 'first_spread' && result.errorCode == null)
                 _identityImages(result),
-              if (_controller.numberMatch != PassportNumberMatch.none)
-                _numberMatchBanner(),
               if (_isRegistrationAddressMissing)
                 const Padding(
                   padding: EdgeInsets.only(bottom: AppSpacing.md),
@@ -543,41 +575,57 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _identityImages(OcrResult result) {
     return Padding(
       padding: const EdgeInsets.only(bottom: AppSpacing.lg),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.end,
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              _imageFrame(bytes: result.photoBytes, icon: Icons.person_outline),
-              const SizedBox(width: AppSpacing.lg),
-              _imageFrame(
-                bytes: result.signatureBytes,
-                icon: Icons.draw_outlined,
-                width: 120,
-                height: 56,
-              ),
-            ],
+          _identityColumn(
+            bytes: result.photoBytes,
+            icon: Icons.person_outline,
+            width: _photoColumnWidth,
+            height: 96,
+            caption: result.photoBytes == null ? 'Фото не найдено' : 'Фотография',
+          ),
+          const SizedBox(width: AppSpacing.lg),
+          _identityColumn(
+            bytes: result.signatureBytes,
+            icon: Icons.draw_outlined,
+            width: _signatureColumnWidth,
+            height: 56,
+            caption: result.signatureBytes == null
+                ? 'Подпись не найдена'
+                : 'Подпись',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _identityColumn({
+    required Uint8List? bytes,
+    required IconData icon,
+    required double width,
+    required double height,
+    required String caption,
+  }) {
+    return SizedBox(
+      width: width,
+      child: Column(
+        children: [
+          _imageFrame(
+            bytes: bytes,
+            icon: icon,
+            width: width,
+            height: height,
           ),
           const SizedBox(height: AppSpacing.xs),
-          Row(
-            children: [
-              SizedBox(
-                width: 72,
-                child: Text(
-                  result.photoBytes == null ? 'Фото не найдено' : 'Фотография',
-                ),
-              ),
-              const SizedBox(width: AppSpacing.lg),
-              SizedBox(
-                width: 120,
-                child: Text(
-                  result.signatureBytes == null
-                      ? 'Подпись не найдена'
-                      : 'Подпись',
-                ),
-              ),
-            ],
+          SizedBox(
+            width: width,
+            child: Text(
+              caption,
+              textAlign: TextAlign.center,
+              softWrap: false,
+              overflow: TextOverflow.visible,
+            ),
           ),
         ],
       ),
@@ -612,31 +660,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 fit: BoxFit.contain,
               ),
       ),
-    );
-  }
-
-  Widget _numberMatchBanner() {
-    final (text, color) = switch (_controller.numberMatch) {
-      PassportNumberMatch.match => (
-        'Номер совпадает с первым разворотом',
-        AppColors.success,
-      ),
-      PassportNumberMatch.mismatch => (
-        'Номер на странице регистрации не совпадает',
-        AppColors.danger,
-      ),
-      PassportNumberMatch.missing => (
-        'Не удалось сверить номер паспорта на странице регистрации',
-        AppColors.warning,
-      ),
-      PassportNumberMatch.none => ('', AppColors.muted),
-    };
-    if (text.isEmpty) {
-      return const SizedBox.shrink();
-    }
-    return Padding(
-      padding: const EdgeInsets.only(bottom: AppSpacing.md),
-      child: Text(text, style: TextStyle(color: color)),
     );
   }
 

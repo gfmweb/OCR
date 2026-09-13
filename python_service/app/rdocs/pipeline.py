@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gc
 import os
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +11,8 @@ import numpy as np
 from app.infrastructure.config import Settings
 from app.rdocs.extract import extract_photo_jpeg, extract_signature_jpeg, read_licence_number
 from app.rdocs.provider import DocumentFieldsSnapshot
+
+_StageCallback = Callable[[str], None]
 
 
 class RussianDocsFieldsProvider:
@@ -21,9 +25,13 @@ class RussianDocsFieldsProvider:
         self._pipeline = None
         self.ready = False
 
-    def warmup(self) -> None:
+    def warmup(self, on_stage: _StageCallback | None = None) -> None:
         if self.ready and self._pipeline is not None:
+            if on_stage is not None:
+                on_stage("ready")
             return
+        if on_stage is not None:
+            on_stage("loading_models")
         models_root = self._settings.rdocs_models_dir
         os.environ["RDOCS_MODELS_ROOT"] = str(models_root)
         _remap_model_paths(models_root)
@@ -33,7 +41,37 @@ class RussianDocsFieldsProvider:
             device=self._settings.rdocs_device,
             ocr=self._settings.rdocs_ocr,
         )
+        if on_stage is not None:
+            on_stage("warmup_inference")
+        try:
+            self.probe()
+        except Exception:
+            if self._pipeline is None:
+                raise
         self.ready = True
+        if on_stage is not None:
+            on_stage("ready")
+
+    def probe(self) -> None:
+        """Run a synthetic frame through the pipeline so ONNX sessions are hot."""
+        if self._pipeline is None:
+            raise RuntimeError("RussianDocsOCR pipeline is not loaded")
+        probe = np.full((64, 64, 3), 255, dtype=np.uint8)
+        with self._lock:
+            self._pipeline.process_img(
+                probe,
+                ocr=True,
+                get_doc_borders=True,
+                find_text_fields=True,
+                check_quality=True,
+                low_quality=True,
+            )
+
+    def release(self) -> None:
+        with self._lock:
+            self._pipeline = None
+            self.ready = False
+        gc.collect()
 
     def process(self, rgb_image: np.ndarray) -> DocumentFieldsSnapshot:
         if self._pipeline is None:

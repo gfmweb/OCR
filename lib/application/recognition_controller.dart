@@ -8,7 +8,6 @@ import 'package:ru_passport/crypto/encrypted_passport_payload.dart';
 import 'package:ru_passport/crypto/passport_encryption_service.dart';
 import 'package:ru_passport/domain/ocr_result.dart';
 import 'package:ru_passport/domain/parsed_field.dart';
-import 'package:ru_passport/domain/passport_number.dart';
 import 'package:ru_passport/domain/pipeline_step.dart';
 import 'package:ru_passport/infrastructure/ocr/local_ocr_client.dart';
 
@@ -28,6 +27,7 @@ class RecognitionController extends ChangeNotifier {
     LocalOcrClient? client,
     PassportEncryptionService? encryptionService,
     PassportPlaintextFactory? plaintextFactory,
+    this.serviceReady = true,
   }) : _client = client ?? LocalOcrClient(),
        _encryptionService = encryptionService ?? PassportEncryptionService(),
        _plaintextFactory = plaintextFactory ?? const PassportPlaintextFactory();
@@ -48,9 +48,13 @@ class RecognitionController extends ChangeNotifier {
   String? encryptionError;
   EncryptedPassportPayload? encryptedPayload;
   Future<void>? _inFlightEncryption;
-  PassportNumberMatch numberMatch = PassportNumberMatch.none;
   final Map<String, String> fieldEdits = {};
   final Map<String, String> fieldOriginals = {};
+  bool serviceReady;
+  String serviceStage = 'starting_server';
+  int serviceProgress = 10;
+  String? serviceError;
+  Future<void>? _prepareFuture;
 
   String? get imagePath => firstSpreadPath;
 
@@ -80,10 +84,11 @@ class RecognitionController extends ChangeNotifier {
   bool get canAddRegistration =>
       hasSuccessfulFirstSpread && phase == RecognitionPhase.ready;
 
-  bool get canGoBack => currentStep.previous != null && !isBusy;
+  bool get canGoBack =>
+      currentStep.previous != null && !isBusy && serviceReady;
 
   bool get canGoNext {
-    if (isBusy) {
+    if (isBusy || !serviceReady) {
       return false;
     }
     return switch (currentStep) {
@@ -100,7 +105,15 @@ class RecognitionController extends ChangeNotifier {
     RecognitionPhase.preparingImage => 'Подготовка изображения',
     RecognitionPhase.ocr => 'Распознавание',
     RecognitionPhase.ready => result == null ? 'Готово' : _readyLabel(result!),
-    RecognitionPhase.error => errorMessage ?? 'Ошибка',
+    RecognitionPhase.error => errorMessage ?? serviceError ?? 'Ошибка',
+  };
+
+  String get serviceStageLabel => switch (serviceStage) {
+    'loading_models' => 'Загрузка моделей',
+    'warmup_inference' => 'Прогрев',
+    'ready' => 'Готово',
+    'error' => serviceError ?? 'Не удалось загрузить модели OCR.',
+    _ => 'Запуск сервиса',
   };
 
   bool isFieldEdited(String id) {
@@ -115,7 +128,7 @@ class RecognitionController extends ChangeNotifier {
   }
 
   bool canSelectStep(PipelineStep step) {
-    if (step.isPlaceholder || isBusy) {
+    if (step.isPlaceholder || isBusy || !serviceReady) {
       return false;
     }
     return switch (step) {
@@ -154,6 +167,59 @@ class RecognitionController extends ChangeNotifier {
     selectStep(next);
   }
 
+  Future<void> prepareService() {
+    final inFlight = _prepareFuture;
+    if (inFlight != null) {
+      return inFlight;
+    }
+    if (serviceReady) {
+      return Future.value();
+    }
+    final future = _prepareServiceNow();
+    _prepareFuture = future;
+    return future.whenComplete(() {
+      if (identical(_prepareFuture, future)) {
+        _prepareFuture = null;
+      }
+    });
+  }
+
+  Future<void> _prepareServiceNow() async {
+    serviceError = null;
+    serviceStage = 'starting_server';
+    serviceProgress = 10;
+    _setPhase(RecognitionPhase.startingService);
+    try {
+      await _client.ensureStarted(
+        onStatus: (status) {
+          serviceStage = status.stage;
+          serviceProgress = status.progress;
+          notifyListeners();
+        },
+      );
+      serviceReady = true;
+      serviceStage = 'ready';
+      serviceProgress = 100;
+      if (phase == RecognitionPhase.startingService) {
+        _setPhase(RecognitionPhase.idle);
+      } else {
+        notifyListeners();
+      }
+    } on OcrException catch (error) {
+      serviceReady = false;
+      serviceStage = 'error';
+      serviceError = error.message;
+      errorMessage = error.message;
+      _setPhase(RecognitionPhase.error);
+    } catch (_) {
+      serviceReady = false;
+      serviceStage = 'error';
+      serviceError = 'Не удалось загрузить модели OCR.';
+      errorMessage = serviceError;
+      _setPhase(RecognitionPhase.error);
+    }
+  }
+
   Future<void> recognize(String path) async {
     firstSpreadPath = path;
     result = null;
@@ -161,7 +227,6 @@ class RecognitionController extends ChangeNotifier {
     registrationResult = null;
     errorMessage = null;
     registrationError = null;
-    numberMatch = PassportNumberMatch.none;
     fieldEdits.clear();
     fieldOriginals.clear();
     _clearEncryption();
@@ -210,7 +275,6 @@ class RecognitionController extends ChangeNotifier {
         registrationError = next.errorCode == 'NOT_REGISTRATION_PAGE'
             ? 'Это не страница регистрации.'
             : 'Не удалось прочитать страницу регистрации.';
-        numberMatch = PassportNumberMatch.none;
         _snapshotField('registrationAddress', '');
         _setPhase(RecognitionPhase.ready);
         return;
@@ -219,10 +283,6 @@ class RecognitionController extends ChangeNotifier {
       _snapshotField(
         'registrationAddress',
         next.fields['registrationAddress']?.value ?? '',
-      );
-      numberMatch = matchPassportNumbers(
-        firstNumber: fieldEdits['number'] ?? '',
-        registrationNumber: next.fields['number']?.value ?? '',
       );
       _setPhase(RecognitionPhase.ready);
     } on OcrException catch (error) {

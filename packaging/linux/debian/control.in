@@ -1,0 +1,13 @@
+Package: nacta-passport
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: amd64
+Depends: libc6 (>= 2.35), libgtk-3-0, libglib2.0-0, libblkid1, liblzma5, libstdc++6, libgl1
+Recommends: xdg-desktop-portal-gtk
+Maintainer: Nacta паспорт <nacta-passport@local>
+Description: Local Russian passport OCR desktop app
+ Nacta паспорт recognises Russian internal passport pages on this computer.
+ Images and personal data never leave the machine. The package bundles the
+ Flutter client, Python 3.12, PaddleOCR/RussianDocsOCR and model weights.
+ Requires Ubuntu/Debian amd64 with glibc from Ubuntu 22.04 or newer.

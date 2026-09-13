@@ -27,13 +27,35 @@ def get_recognize_service(request: Request) -> RecognizeService:
 def health(request: Request, manager: ModelManager = Depends(get_manager)) -> dict[str, Any]:
     fields = getattr(request.app.state, "fields_provider", None)
     rdocs_ready = bool(getattr(fields, "ready", False))
+    warmup = getattr(request.app.state, "warmup_status", None)
+    snapshot = warmup.snapshot() if warmup is not None else {
+        "stage": "ready" if rdocs_ready else "starting_server",
+        "progress": 100 if rdocs_ready else 15,
+        "error": False,
+    }
+    if snapshot["error"]:
+        status_value = "error"
+    elif manager.ready and rdocs_ready:
+        status_value = "ready"
+    else:
+        status_value = "starting"
     return {
-        "status": "ready" if manager.ready and rdocs_ready else "starting",
+        "status": status_value,
+        "stage": snapshot["stage"],
+        "progress": snapshot["progress"],
         "provider": manager.provider.name if manager.ready else None,
         "model_version": manager.provider.model_version if manager.ready else None,
         "bind": f"{request.app.state.settings.api_host}:{request.app.state.settings.api_port}",
         "rdocs_ready": rdocs_ready,
     }
+
+
+def _service_ready(request: Request) -> bool:
+    fields = getattr(request.app.state, "fields_provider", None)
+    warmup = getattr(request.app.state, "warmup_status", None)
+    if warmup is not None and warmup.error:
+        return False
+    return bool(getattr(fields, "ready", False))
 
 
 @router.post("/api/v1/recognize")
@@ -43,6 +65,11 @@ async def recognize(
     page: str = Form("first_spread"),
     service: RecognizeService = Depends(get_recognize_service),
 ) -> dict[str, Any]:
+    if not _service_ready(request):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error_code": "SERVICE_STARTING"},
+        )
     settings = request.app.state.settings
     logger = request.app.state.logger
     payload = await image.read()
@@ -91,6 +118,13 @@ async def recognize(
 
 @router.post("/shutdown")
 def shutdown(request: Request) -> dict[str, str]:
+    fields = getattr(request.app.state, "fields_provider", None)
+    release = getattr(fields, "release", None) if fields is not None else None
+    if callable(release):
+        release()
+    warmup = getattr(request.app.state, "warmup_status", None)
+    if warmup is not None:
+        warmup.set_stage("starting_server")
     server = getattr(request.app.state, "server", None)
     if server is not None:
         server.should_exit = True

@@ -8,7 +8,7 @@ enum PipelineStep {
   String get label => switch (this) {
     PipelineStep.firstSpread => 'Разворот',
     PipelineStep.registration => 'Регистрация',
-    PipelineStep.review => 'Редактирование и проверка',
+    PipelineStep.review => 'Редактирование\nи проверка',
     PipelineStep.encryption => 'Шифрование',
     PipelineStep.send => 'Отправка',
   };

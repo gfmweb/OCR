@@ -9,6 +9,8 @@ import 'package:ru_passport/crypto/passport_plaintext.dart';
 import 'package:ru_passport/domain/ocr_result.dart';
 import 'package:ru_passport/domain/parsed_field.dart';
 import 'package:ru_passport/domain/pipeline_step.dart';
+import 'package:ru_passport/infrastructure/ocr/local_ocr_client.dart';
+import 'package:ru_passport/infrastructure/ocr/ocr_service_status.dart';
 
 void main() {
   const timings = StageTimings(
@@ -216,6 +218,56 @@ void main() {
     expect(controller.hasEncryptedDocument, isFalse);
     expect(controller.encryptionPhase, EncryptionPhase.idle);
   });
+
+  test('injected client is not started until prepareService', () async {
+    final client = _FakeOcrClient();
+    final controller = RecognitionController(
+      client: client,
+      serviceReady: true,
+    );
+    await controller.prepareService();
+    expect(client.ensureCalls, 0);
+    expect(controller.serviceReady, isTrue);
+  });
+
+  test('prepareService records warmup stages from the OCR client', () async {
+    final client = _FakeOcrClient(
+      statuses: const [
+        OcrServiceStatus(stage: 'loading_models', progress: 55, ready: false),
+        OcrServiceStatus(stage: 'warmup_inference', progress: 85, ready: false),
+        OcrServiceStatus(stage: 'ready', progress: 100, ready: true),
+      ],
+    );
+    final controller = RecognitionController(
+      client: client,
+      serviceReady: false,
+    );
+    expect(controller.canGoNext, isFalse);
+    await controller.prepareService();
+    expect(client.ensureCalls, 1);
+    expect(controller.serviceReady, isTrue);
+    expect(controller.serviceStage, 'ready');
+    expect(controller.serviceProgress, 100);
+    expect(controller.phase, RecognitionPhase.idle);
+  });
+}
+
+class _FakeOcrClient extends LocalOcrClient {
+  _FakeOcrClient({this.statuses = const []});
+
+  final List<OcrServiceStatus> statuses;
+  int ensureCalls = 0;
+
+  @override
+  Future<void> ensureStarted({OcrStatusCallback? onStatus}) async {
+    ensureCalls += 1;
+    for (final status in statuses) {
+      onStatus?.call(status);
+    }
+  }
+
+  @override
+  Future<void> dispose() async {}
 }
 
 class _StubEncryptionService extends PassportEncryptionService {

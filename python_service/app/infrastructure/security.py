@@ -14,8 +14,11 @@ def generate_session_token() -> str:
 
 
 def persist_token(token: str) -> None:
-    TOKEN_FILE.write_text(token, encoding="utf-8")
-    TOKEN_FILE.chmod(0o600)
+    try:
+        TOKEN_FILE.write_text(token, encoding="utf-8")
+        TOKEN_FILE.chmod(0o600)
+    except OSError:
+        return
 
 
 def load_or_create_token(configured: str) -> str:

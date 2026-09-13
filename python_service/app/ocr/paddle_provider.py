@@ -16,7 +16,11 @@ class PaddleOCRProvider:
         self._prepare_runtime_env()
 
     def _prepare_runtime_env(self) -> None:
-        self._settings.models_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self._settings.models_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            if not self._settings.models_dir.exists():
+                raise
         os.environ["PADDLE_PDX_CACHE_HOME"] = str(self._settings.models_dir)
         os.environ["HUGGINGFACE_HUB_CACHE"] = str(self._settings.models_dir / "hf")
         os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] = "True"
